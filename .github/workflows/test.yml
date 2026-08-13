@@ -1,0 +1,51 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-submodules:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Verify simple-go submodule tracks its main branch
+        run: |
+          cd simple-go
+          git fetch origin main
+          pinned=$(git rev-parse HEAD)
+          latest=$(git rev-parse origin/main)
+          if [ "$pinned" != "$latest" ]; then
+            echo "::error::simple-go submodule is pinned to $pinned but origin/main is at $latest. Run 'make sync-submodules' and commit the update."
+            exit 1
+          fi
+          echo "simple-go submodule is up to date with origin/main ($pinned)."
+
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet
+        run: make vet
+
+      - name: Unit tests
+        run: make unit-tests
+
+      - name: Integration tests
+        run: make integration-tests

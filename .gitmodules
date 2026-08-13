@@ -1,0 +1,3 @@
+[submodule "simple-go"]
+	path = simple-go
+	url = https://github.com/radiospiel/simple-go

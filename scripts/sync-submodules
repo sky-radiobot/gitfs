@@ -1,0 +1,58 @@
+#!/bin/bash
+# Taken from github.com/radiospiel/critic (scripts/sync-submodules).
+set -e
+
+# Keep git submodules checked out and up to date before a build, and push
+# back any local changes made inside a submodule (e.g. while developing
+# simple-go/* alongside gitfs) so they aren't silently left behind.
+#
+# Run from anywhere inside the repo; operates on all registered submodules.
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+if [ ! -f .gitmodules ]; then
+    exit 0
+fi
+
+git submodule update --init
+
+git config -f .gitmodules --get-regexp path | while read -r _ path; do
+    (
+        cd "$REPO_ROOT/$path"
+
+        # Local (uncommitted) edits made directly inside the submodule need
+        # a home before they can be pushed anywhere.
+        if [ -n "$(git status --porcelain)" ]; then
+            if ! git symbolic-ref -q HEAD >/dev/null; then
+                default_branch="$(git remote show origin | sed -n 's/.*HEAD branch: //p')"
+                git checkout -B "${default_branch:-main}"
+            fi
+            echo "sync-submodules: committing local changes in $path"
+            git add -A
+            git commit -m "Sync local changes from gitfs ($(date -u +%Y-%m-%dT%H:%M:%SZ))" >/dev/null
+        fi
+
+        # Nothing to push if we're not on a branch (detached at a pinned SHA).
+        if ! git symbolic-ref -q HEAD >/dev/null; then
+            exit 0
+        fi
+
+        branch="$(git rev-parse --abbrev-ref HEAD)"
+        git fetch origin "$branch" >/dev/null 2>&1 || true
+
+        if git rev-parse --verify -q "origin/$branch" >/dev/null; then
+            ahead="$(git rev-list --count "origin/$branch..HEAD")"
+        else
+            ahead=1 # no upstream branch yet: push creates it
+        fi
+
+        if [ "$ahead" -gt 0 ]; then
+            echo "sync-submodules: pushing $ahead commit(s) in $path to origin/$branch"
+            git push -u origin "$branch"
+        fi
+    )
+done
+
+# Record whatever commit each submodule now points at.
+git add $(git config -f .gitmodules --get-regexp path | awk '{print $2}')
