@@ -1,0 +1,126 @@
+#!/bin/bash
+set -eu -o pipefail
+
+# Create a new stacked branch on top of the currently checked-out branch.
+#
+# The new branch is recorded as a child of the current branch (via the
+# `branch.<name>.stack-parent` git config entry, which scripts/git-stack-restack
+# uses to walk the stack), pushed to origin, and a PR is opened through the
+# GitHub API targeting the parent branch.
+#
+# Usage:
+#   ./scripts/git-stack-create [branch-name]
+#
+# If branch-name is omitted, a name is derived from the parent branch and a
+# timestamp (e.g. `my-feature--stack-20260610-181500`).
+#
+# With scripts/ on your PATH this is also available as `git stack-create`.
+
+PARENT=$(git branch --show-current)
+if [ -z "$PARENT" ]; then
+  echo "Error: not on a branch (detached HEAD). Check out the parent branch first." >&2
+  exit 1
+fi
+
+BRANCH="${1:-${PARENT}--stack-$(date -u +%Y%m%d-%H%M%S)}"
+
+if git rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null; then
+  echo "Error: branch $BRANCH already exists." >&2
+  exit 1
+fi
+
+github_repo_slug() {
+  local URL
+  if [ -n "${GITHUB_REPOSITORY:-}" ]; then
+    echo "$GITHUB_REPOSITORY"
+    return 0
+  fi
+  URL=$(git remote get-url origin 2>/dev/null || true)
+  case "$URL" in
+    git@github.com:*.git)
+      echo "${URL#git@github.com:}" | sed 's|\.git$||'
+      ;;
+    git@github.com:*)
+      echo "${URL#git@github.com:}"
+      ;;
+    https://github.com/*.git)
+      echo "${URL#https://github.com/}" | sed 's|\.git$||'
+      ;;
+    https://github.com/*)
+      echo "${URL#https://github.com/}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+github_token() {
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    echo "$GITHUB_TOKEN"
+  elif [ -n "${GH_TOKEN:-}" ]; then
+    echo "$GH_TOKEN"
+  else
+    echo "Error: set GITHUB_TOKEN or GH_TOKEN to create the PR through the GitHub API." >&2
+    return 1
+  fi
+}
+
+json_string() {
+  printf '%s' "$1" | perl -MJSON::PP -0 -e 'print JSON::PP->new->ascii->encode(<STDIN>)'
+}
+
+github_api() {
+  local METHOD="$1" API_PATH="$2" DATA="${3:-}" TOKEN
+  TOKEN=$(github_token)
+  if [ -n "$DATA" ]; then
+    curl -fsS \
+      -X "$METHOD" \
+      -H "Accept: application/vnd.github+json" \
+      -H "Authorization: Bearer $TOKEN" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      -d "$DATA" \
+      "https://api.github.com$API_PATH"
+  else
+    curl -fsS \
+      -X "$METHOD" \
+      -H "Accept: application/vnd.github+json" \
+      -H "Authorization: Bearer $TOKEN" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "https://api.github.com$API_PATH"
+  fi
+}
+
+create_pull_request() {
+  local REPO PAYLOAD RESPONSE URL
+  REPO=$(github_repo_slug) || {
+    echo "Error: origin is not a github.com remote URL." >&2
+    exit 1
+  }
+  PAYLOAD=$(printf '{"title":%s,"head":%s,"base":%s,"body":%s}' \
+    "$(json_string "$BRANCH")" \
+    "$(json_string "$BRANCH")" \
+    "$(json_string "$PARENT")" \
+    "$(json_string "Stacked PR on top of \`$PARENT\`. Created by scripts/git-stack-create.")")
+  RESPONSE=$(github_api POST "/repos/$REPO/pulls" "$PAYLOAD")
+  URL=$(printf '%s' "$RESPONSE" | perl -MJSON::PP -0777 -e 'print decode_json(<STDIN>)->{html_url} // ""')
+  if [ -n "$URL" ]; then
+    echo "Opened PR: $URL"
+  else
+    echo "Opened PR for $BRANCH into $PARENT."
+  fi
+}
+
+echo "Creating $BRANCH as a child of $PARENT..."
+git checkout -b "$BRANCH"
+git config "branch.$BRANCH.stack-parent" "$PARENT"
+
+# GitHub refuses to open a PR between two identical branches, so seed the
+# new branch with an empty commit.
+git commit --allow-empty -m "Start stack branch $BRANCH (on $PARENT)"
+
+git push -u origin "$BRANCH"
+create_pull_request
+
+echo ""
+echo "Created $BRANCH (parent: $PARENT) and opened its PR."

@@ -1,0 +1,430 @@
+#!/bin/bash
+set -eu -o pipefail
+
+# Sync a stack of branches created with scripts/git-stack-create.
+#
+# Starting from the bottom of the stack that contains the current branch,
+# each branch is rebased onto a freshly pulled parent:
+#
+#   - If the parent's branch tip is already contained in the freshly fetched
+#     default branch (origin/HEAD, e.g. master), the branch is rebased onto the
+#     default branch and its recorded stack-parent is updated.
+#   - Otherwise the branch is rebased onto the freshly pulled parent.
+#
+# Either way the branch is pushed (--force-with-lease), and the same procedure
+# repeats for each child branch further up the stack. Non-checked-out branches
+# are rebased in a temporary detached worktree. The current branch is rebased in
+# place after stashing local changes, then the stash is restored before exit.
+#
+# Stack relationships come from `branch.<name>.stack-parent` git config
+# entries written by git-stack-create.
+#
+# Usage:
+#   ./scripts/git-stack-restack [branch-in-stack]
+#
+# With scripts/ on your PATH this is also available as `git stack-restack`.
+
+CURRENT_BRANCH=$(git branch --show-current)
+if [ -z "$CURRENT_BRANCH" ]; then
+  echo "Error: not on a branch (detached HEAD)." >&2
+  exit 1
+fi
+
+START_BRANCH="${1:-$CURRENT_BRANCH}"
+REBASE_WORKTREE=""
+AUTO_STASHED=0
+AUTO_STASH_REF=""
+
+echo "Fetching origin..."
+git fetch origin --prune
+
+# Default branch, e.g. "master". The remote's default branch is the
+# origin/HEAD symref, cached at clone time — there is no git config key for
+# it (init.defaultBranch only applies to `git init`). If the symref is
+# missing (e.g. the remote was added manually), ask the remote and cache it.
+remote_default_branch() {
+  git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null \
+    | sed 's|^refs/remotes/origin/||' || true
+}
+
+DEFAULT_BRANCH=$(remote_default_branch)
+if [ -z "$DEFAULT_BRANCH" ]; then
+  git remote set-head origin --auto >/dev/null
+  DEFAULT_BRANCH=$(remote_default_branch)
+fi
+if [ -z "$DEFAULT_BRANCH" ]; then
+  echo "Error: could not determine the default branch of origin." >&2
+  exit 1
+fi
+
+stack_parent() {
+  git config --get "branch.$1.stack-parent" 2>/dev/null || true
+}
+
+stack_children() {
+  git config --get-regexp '^branch\..*\.stack-parent$' 2>/dev/null \
+    | while read -r KEY VALUE; do
+        if [ "$VALUE" = "$1" ]; then
+          KEY=${KEY#branch.}
+          echo "${KEY%.stack-parent}"
+        fi
+      done
+}
+
+github_repo_slug() {
+  local URL
+  if [ -n "${GITHUB_REPOSITORY:-}" ]; then
+    echo "$GITHUB_REPOSITORY"
+    return 0
+  fi
+  URL=$(git remote get-url origin 2>/dev/null || true)
+  case "$URL" in
+    git@github.com:*.git)
+      echo "${URL#git@github.com:}" | sed 's|\.git$||'
+      ;;
+    git@github.com:*)
+      echo "${URL#git@github.com:}"
+      ;;
+    https://github.com/*.git)
+      echo "${URL#https://github.com/}" | sed 's|\.git$||'
+      ;;
+    https://github.com/*)
+      echo "${URL#https://github.com/}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+github_repo_owner() {
+  github_repo_slug | sed 's|/.*$||'
+}
+
+github_token() {
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    echo "$GITHUB_TOKEN"
+  elif [ -n "${GH_TOKEN:-}" ]; then
+    echo "$GH_TOKEN"
+  elif command -v gh >/dev/null 2>&1 && gh auth token 2>/dev/null; then
+    :
+  else
+    echo "Error: set GITHUB_TOKEN or GH_TOKEN (or run 'gh auth login') to edit PRs through the GitHub API." >&2
+    return 1
+  fi
+}
+
+have_github_token() {
+  [ -n "${GITHUB_TOKEN:-}${GH_TOKEN:-}" ] || { command -v gh >/dev/null 2>&1 && gh auth token >/dev/null 2>&1; }
+}
+
+json_string() {
+  printf '%s' "$1" | perl -MJSON::PP -0 -e 'print JSON::PP->new->ascii->encode(<STDIN>)'
+}
+
+github_api() {
+  local METHOD="$1" API_PATH="$2" DATA="${3:-}" TOKEN
+  TOKEN=$(github_token)
+  if [ -n "$DATA" ]; then
+    curl -fsS \
+      -X "$METHOD" \
+      -H "Accept: application/vnd.github+json" \
+      -H "Authorization: Bearer $TOKEN" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      -d "$DATA" \
+      "https://api.github.com$API_PATH"
+  else
+    curl -fsS \
+      -X "$METHOD" \
+      -H "Accept: application/vnd.github+json" \
+      -H "Authorization: Bearer $TOKEN" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "https://api.github.com$API_PATH"
+  fi
+}
+
+find_open_pr_number() {
+  local REPO OWNER BRANCH="$1" TOKEN RESPONSE
+  REPO=$(github_repo_slug) || {
+    echo "Error: origin is not a github.com remote URL." >&2
+    return 1
+  }
+  OWNER=$(github_repo_owner)
+  TOKEN=$(github_token)
+  RESPONSE=$(curl -fsS -G \
+    -H "Accept: application/vnd.github+json" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    --data-urlencode "head=$OWNER:$BRANCH" \
+    --data-urlencode "state=open" \
+    "https://api.github.com/repos/$REPO/pulls")
+  printf '%s' "$RESPONSE" \
+    | perl -MJSON::PP -0777 -e '$p = decode_json(<STDIN>); print @$p ? $p->[0]{number} : ""'
+}
+
+retarget_pull_request() {
+  local BRANCH="$1" BASE="$2" REPO PR PAYLOAD
+  REPO=$(github_repo_slug) || {
+    echo "Error: origin is not a github.com remote URL." >&2
+    exit 1
+  }
+  PR=$(find_open_pr_number "$BRANCH")
+  if [ -z "$PR" ]; then
+    echo "Error: could not find an open PR for $BRANCH to retarget." >&2
+    exit 1
+  fi
+  PAYLOAD=$(printf '{"base":%s}' "$(json_string "$BASE")")
+  github_api PATCH "/repos/$REPO/pulls/$PR" "$PAYLOAD" >/dev/null
+  echo "Retargeted PR #$PR for $BRANCH to base $BASE."
+}
+
+pr_state() {
+  # MERGED when the branch tip is already reachable from origin/default
+  # (ordinary merge or rebase-merge). Squash merges don't satisfy this: a
+  # squash-merged PR lands as a brand-new commit on the default branch with
+  # no ancestry back to the branch tip, even though the PR is done. Since
+  # this repo squash-merges by default, fall back to asking GitHub whether
+  # a PR for this branch was merged before calling it OPEN.
+  local REF="$1" BRANCH="${1#origin/}"
+  if git merge-base --is-ancestor "$REF" "origin/$DEFAULT_BRANCH" 2>/dev/null; then
+    echo "MERGED"
+  elif have_github_token && pr_squash_merged "$BRANCH"; then
+    echo "MERGED"
+  else
+    echo "OPEN"
+  fi
+}
+
+pr_squash_merged() {
+  local BRANCH="$1" REPO OWNER TOKEN
+  REPO=$(github_repo_slug) || return 1
+  OWNER=$(github_repo_owner)
+  TOKEN=$(github_token) || return 1
+  curl -fsS -G \
+    -H "Accept: application/vnd.github+json" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    --data-urlencode "head=$OWNER:$BRANCH" \
+    --data-urlencode "state=all" \
+    "https://api.github.com/repos/$REPO/pulls" \
+    | perl -MJSON::PP -0777 -e '
+        my $prs = decode_json(<STDIN>);
+        for my $pr (@$prs) { exit 0 if defined $pr->{merged_at}; }
+        exit 1
+      '
+}
+
+worktree_path_for_branch() {
+  local WANT="refs/heads/$1" KEY VALUE WT_PATH=""
+  git worktree list --porcelain \
+    | while IFS=' ' read -r KEY VALUE; do
+        if [ "$KEY" = "worktree" ]; then
+          WT_PATH="$VALUE"
+        elif [ "$KEY" = "branch" ] && [ "$VALUE" = "$WANT" ]; then
+          echo "$WT_PATH"
+        fi
+      done
+}
+
+make_worktree() {
+  mktemp -d "${TMPDIR:-/tmp}/git-stack-restack.XXXXXX"
+}
+
+cleanup_worktree() {
+  if [ -n "${REBASE_WORKTREE:-}" ] && [ -d "$REBASE_WORKTREE" ]; then
+    git worktree remove --force "$REBASE_WORKTREE" >/dev/null 2>&1 || true
+  fi
+}
+
+stash_current_changes() {
+  if [ "$AUTO_STASHED" -eq 1 ] || [ -z "$(git status --porcelain)" ]; then
+    return 0
+  fi
+  echo "Stashing local changes before rebasing $CURRENT_BRANCH..."
+  git stash push -u -m "git-stack-restack automatic stash for $CURRENT_BRANCH" >/dev/null
+  AUTO_STASHED=1
+  AUTO_STASH_REF=$(git rev-parse refs/stash)
+}
+
+stash_ref_for_sha() {
+  local WANT="$1" N=0 SHA
+  git reflog show --format=%H refs/stash \
+    | while read -r SHA; do
+        if [ "$SHA" = "$WANT" ]; then
+          echo "stash@{$N}"
+          break
+        fi
+        N=$((N + 1))
+      done
+}
+
+restore_current_changes() {
+  local STASH_REF
+  if [ "$AUTO_STASHED" -eq 0 ]; then
+    return 0
+  fi
+  echo "Restoring local changes..."
+  STASH_REF=$(stash_ref_for_sha "$AUTO_STASH_REF")
+  if [ -z "$STASH_REF" ]; then
+    echo "Error: automatic stash $AUTO_STASH_REF is missing. Restore changes manually if needed." >&2
+    return 1
+  fi
+  if ! git stash apply --index "$STASH_REF" >/dev/null; then
+    echo "Error: automatic stash could not be reapplied cleanly. Resolve it manually." >&2
+    return 1
+  fi
+  git stash drop "$STASH_REF" >/dev/null
+  AUTO_STASHED=0
+  AUTO_STASH_REF=""
+}
+
+cleanup_all() {
+  cleanup_worktree
+  restore_current_changes
+}
+
+trap cleanup_all EXIT
+
+# run_rebase performs a fully non-interactive detached-HEAD rebase in a
+# temporary worktree. Merge commits are ignored (--no-rebase-merges flattens
+# history; the stack is linear by construction, so stray merge commits are
+# noise). The branch ref is updated only after the rebase succeeds.
+run_rebase() {
+  local BRANCH="$1"
+  shift
+  local OLD_SHA NEW_SHA CHECKED_OUT_AT
+  OLD_SHA=$(git rev-parse "refs/heads/$BRANCH")
+
+  CHECKED_OUT_AT=$(worktree_path_for_branch "$BRANCH")
+  if [ -n "$CHECKED_OUT_AT" ] && [ "$BRANCH" != "$CURRENT_BRANCH" ]; then
+    echo "Error: refusing to rewrite $BRANCH because it is checked out in another worktree:" >&2
+    echo "  $CHECKED_OUT_AT" >&2
+    exit 1
+  fi
+
+  if [ "$BRANCH" = "$CURRENT_BRANCH" ]; then
+    stash_current_changes
+    if ! git -c core.editor=true rebase --no-rebase-merges --empty=drop --no-keep-empty "$@"; then
+      git rebase --abort 2>/dev/null || true
+      echo "Error: rebase of $BRANCH failed (conflicts?). Resolve manually and re-run." >&2
+      exit 1
+    fi
+    return 0
+  fi
+
+  REBASE_WORKTREE=$(make_worktree)
+  git worktree add --quiet --detach "$REBASE_WORKTREE" "$OLD_SHA"
+  if ! git -C "$REBASE_WORKTREE" -c core.editor=true rebase --no-rebase-merges --empty=drop --no-keep-empty "$@"; then
+    git -C "$REBASE_WORKTREE" rebase --abort 2>/dev/null || true
+    cleanup_worktree
+    REBASE_WORKTREE=""
+    echo "Error: rebase of $BRANCH failed (conflicts?). Resolve manually and re-run." >&2
+    exit 1
+  fi
+
+  NEW_SHA=$(git -C "$REBASE_WORKTREE" rev-parse HEAD)
+  cleanup_worktree
+  REBASE_WORKTREE=""
+  git update-ref "refs/heads/$BRANCH" "$NEW_SHA" "$OLD_SHA"
+}
+
+# Walk down to the bottom of the stack containing the current branch: the
+# first branch whose recorded parent has no stack-parent of its own.
+BOTTOM="$START_BRANCH"
+while true; do
+  PARENT=$(stack_parent "$BOTTOM")
+  if [ -z "$PARENT" ] || [ -z "$(stack_parent "$PARENT")" ]; then
+    break
+  fi
+  BOTTOM="$PARENT"
+done
+
+if [ -z "$(stack_parent "$BOTTOM")" ]; then
+  echo "Error: $START_BRANCH is not part of a stack (no stack-parent recorded)." >&2
+  exit 1
+fi
+
+sync_branch() {
+  local BRANCH="$1"
+  local PARENT PARENT_REF
+  PARENT=$(stack_parent "$BRANCH")
+  PARENT_REF="$PARENT"
+
+  echo ""
+  echo "=== Syncing $BRANCH (parent: $PARENT) ==="
+
+  # A branch whose own PR is already merged must not be rebased or pushed;
+  # its children take care of moving themselves off it.
+  if [ "$(pr_state "$BRANCH")" = "MERGED" ]; then
+    echo "$BRANCH is already contained in origin/$DEFAULT_BRANCH; skipping."
+    local CHILD
+    for CHILD in $(stack_children "$BRANCH"); do
+      sync_branch "$CHILD"
+    done
+    return 0
+  fi
+
+  git fetch origin "$BRANCH" >/dev/null 2>&1 || true
+  if [ "$PARENT" != "$DEFAULT_BRANCH" ]; then
+    git fetch origin "$PARENT" >/dev/null 2>&1 || true
+    if [ -z "$(stack_parent "$PARENT")" ] \
+       && git rev-parse --verify --quiet "refs/remotes/origin/$PARENT" >/dev/null; then
+      PARENT_REF="origin/$PARENT"
+    fi
+  fi
+
+  if [ "$PARENT" != "$DEFAULT_BRANCH" ] && [ "$(pr_state "$PARENT_REF")" = "MERGED" ]; then
+    echo "$PARENT is contained in origin/$DEFAULT_BRANCH; rebasing $BRANCH onto $DEFAULT_BRANCH."
+    git fetch origin "$DEFAULT_BRANCH"
+    # --onto drops the parent's (now merged) commits instead of replaying
+    # them on top of the default branch. The local parent ref still points
+    # at the pre-merge head, which is exactly the upstream we want to cut at.
+    run_rebase "$BRANCH" --onto "origin/$DEFAULT_BRANCH" "$PARENT"
+    git config "branch.$BRANCH.stack-parent" "$DEFAULT_BRANCH"
+    git push --force-with-lease -u origin "$BRANCH"
+    retarget_pull_request "$BRANCH" "$DEFAULT_BRANCH"
+    # The merged parent's local branch is no longer part of the stack.
+    git config --unset "branch.$PARENT.stack-parent" 2>/dev/null || true
+  else
+    if [ "$PARENT" = "$DEFAULT_BRANCH" ]; then
+      echo "Pulling $DEFAULT_BRANCH and rebasing $BRANCH onto it."
+    else
+      echo "Pulling parent $PARENT and rebasing $BRANCH onto it."
+    fi
+    if [ "$PARENT" = "$DEFAULT_BRANCH" ]; then
+      git fetch origin "$DEFAULT_BRANCH"
+      run_rebase "$BRANCH" "origin/$DEFAULT_BRANCH"
+    else
+      run_rebase "$BRANCH" "$PARENT_REF"
+    fi
+    git push --force-with-lease -u origin "$BRANCH"
+  fi
+
+  local CHILD
+  for CHILD in $(stack_children "$BRANCH"); do
+    sync_branch "$CHILD"
+  done
+}
+
+sync_branch "$BOTTOM"
+
+# Clean out stack-parent entries that no longer describe a valid stack
+# relationship — the branch or its recorded parent no longer exists locally
+# (e.g. branches deleted after their PR merged).
+git config --get-regexp '^branch\..*\.stack-parent$' 2>/dev/null \
+  | while read -r KEY PARENT; do
+      BRANCH=${KEY#branch.}
+      BRANCH=${BRANCH%.stack-parent}
+      if ! git rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null \
+         || { [ "$PARENT" != "$DEFAULT_BRANCH" ] \
+              && ! git rev-parse --verify --quiet "refs/heads/$PARENT" >/dev/null; }; then
+        echo "Removing stale stack-parent config for $BRANCH (parent: $PARENT)."
+        git config --unset "branch.$BRANCH.stack-parent" 2>/dev/null || true
+      fi
+    done
+
+trap - EXIT
+cleanup_all
+
+echo ""
+echo "Stack synced. Current checkout stayed on $CURRENT_BRANCH."
