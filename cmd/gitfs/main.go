@@ -204,10 +204,12 @@ func printInfo(fi fs.FileInfo) {
 	fmt.Printf("%s\t%d\t%s\n", fi.Mode(), fi.Size(), fi.Name())
 }
 
-// completeRef suggests REF completions (local branches, tags, and HEAD) for
-// the first positional argument of cat/ls; later arguments (PATH...) fall
-// back to the shell's default file completion, since they're resolved
-// against the current directory just like plain cat/ls.
+// completeRef suggests REF completions (local branches, tags,
+// remote-tracking refs such as origin/main or the origin/HEAD symref
+// shortened to just "origin", and HEAD) for the first positional argument
+// of cat/ls; later arguments (PATH...) fall back to the shell's default
+// file completion, since they're resolved against the current directory
+// just like plain cat/ls.
 func completeRef(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	if len(args) != 0 {
 		return nil, cobra.ShellCompDirectiveDefault
@@ -221,7 +223,7 @@ func completeRef(cmd *cobra.Command, args []string, toComplete string) ([]string
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	out, err := runGit(gitBin, repoPath, "for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/tags")
+	out, err := runGit(gitBin, repoPath, "for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/tags", "refs/remotes")
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}

@@ -38,6 +38,9 @@ setup() {
   git -C "$REPO" tag v1
   BARE=$(mktemp -d)
   git clone --quiet --bare "$REPO" "$BARE/repo.git"
+  git -C "$REPO" remote add origin "$BARE/repo.git"
+  git -C "$REPO" fetch --quiet origin
+  git -C "$REPO" remote set-head origin -a >/dev/null
   cd "$REPO"
 }
 
@@ -239,6 +242,21 @@ test_ref_completion_respects_prefix() {
     fail "expected 'main' filtered out by prefix 'v': $out"
   else
     pass
+  fi
+}
+
+test_completes_remote_tracking_ref() {
+  local out
+  out=$("$GITFS_BIN" __complete ls "orig" 2>/dev/null)
+  if has_line "$out" origin; then
+    pass
+  else
+    fail "expected 'origin' (origin/HEAD, shortened) in ref completions: $out"
+  fi
+  if has_line "$out" origin/main; then
+    pass
+  else
+    fail "expected 'origin/main' in ref completions: $out"
   fi
 }
 
