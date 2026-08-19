@@ -86,9 +86,12 @@ cobra subcommands with `REF` as their first positional argument, so e.g.
 `gitfs cat --help` works and documents `REF` correctly.
 
 Shell completion (`gitfs completion bash|zsh|fish|powershell`) completes
-subcommands out of the box, and `REF` against local branches, tags, and
-`HEAD` — e.g. `gitfs cat ma<TAB>` completes to `main`. `PATH` arguments
-fall back to the shell's normal file completion.
+subcommands out of the box, and `REF` against local branches, tags,
+remote-tracking refs, and `HEAD` — e.g. `gitfs cat ma<TAB>` completes to
+`main`. Typing 4+ hex digits (e.g. `91<TAB>` → nothing, `9195<TAB>` → the
+full SHA) also completes commit-SHA prefixes, via git's own indexed object
+lookup rather than a history scan, so it stays fast regardless of repo
+size. `PATH` arguments fall back to the shell's normal file completion.
 
 ## Development
 
