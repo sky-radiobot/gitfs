@@ -30,6 +30,24 @@ type backend interface {
 	list(p string) ([]entry, error)
 	// readBlob returns the content of the blob with the given hash.
 	readBlob(hash string) ([]byte, error)
+	// lastCommit returns the last commit, within maxCommits ancestors of
+	// the pinned commit (unbounded if maxCommits is negative; 0 examines
+	// only the pinned commit itself), that changed the entry at
+	// repo-relative path p ("" is the root). If none is found
+	// within that bound, it returns the pinned commit's own info instead
+	// — the result is never a commit newer than the pinned one, though it
+	// may be imprecise under a tight bound. Used only when WithExtendedStats
+	// is set.
+	lastCommit(p string, maxCommits int) (commitInfo, error)
+}
+
+// commitInfo is the identity of a single commit, as returned by
+// backend.lastCommit.
+type commitInfo struct {
+	sha    string
+	author string
+	email  string
+	date   time.Time
 }
 
 // modeFromGit maps a git tree entry mode to fs.FileMode.

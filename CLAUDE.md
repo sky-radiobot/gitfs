@@ -8,7 +8,7 @@ reads, ever.
 ## Repository layout
 
 - `gitfs.go` — `GitFS` type, `Open` constructor, functional options, sparse filtering
-- `backend.go` — the `backend` interface, `entry` type, git-mode → `fs.FileMode` mapping
+- `backend.go` — the `backend` interface (including `lastCommit`, for `WithExtendedStats`), `entry`/`commitInfo` types, git-mode → `fs.FileMode` mapping
 - `backend_gogit.go` — default backend, pure Go via [go-git](https://github.com/go-git/go-git)
 - `backend_exec.go` — shell-out backend, used only when `WithGitBinary` is set
 - `file.go` — in-memory `fs.File` implementation
@@ -40,7 +40,13 @@ reads, ever.
   filtering are written once, above it. Never special-case a backend outside
   its own file.
 - New tunables are added as functional options (`WithGitBinary`,
-  `WithSparse`), never as new constructors.
+  `WithSparse`, `WithExtendedStats`), never as new constructors.
+- `WithExtendedStats` surfaces per-file last-commit info through
+  `fs.FileInfo.Sys()` (returning `*ExtendedStat`) rather than a new method
+  on `GitFS` — computed lazily on `Sys()` call, not up front, and backed by
+  a `backend.lastCommit` method each backend implements independently
+  (gogit walks first-parent history via `go-git`; exec shells out to
+  `git log`).
 - Public names are validated with `fs.ValidPath`; failures are returned as
   `*fs.PathError` (`fs.ErrNotExist` / `fs.ErrInvalid`).
 - Symlinks are reported (`fs.ModeSymlink`) but never followed; blob content

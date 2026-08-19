@@ -281,6 +281,109 @@ func TestSparse(t *testing.T) {
 	assert.Equals(t, strings.Join(matches, ","), "sub/deep/file.go")
 }
 
+// buildHistoryFixture creates a git repo with two commits: the first adds
+// old.txt and touched.txt, the second changes only touched.txt. It returns
+// the repo path and both commit SHAs.
+func buildHistoryFixture(t *testing.T) (repo, sha1, sha2 string) {
+	t.Helper()
+	repo = t.TempDir()
+	gitIn(t, repo, "init", "--quiet", "--initial-branch=main")
+
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("old.txt", "old\n")
+	write("touched.txt", "v1\n")
+	gitIn(t, repo, "add", "-A")
+	gitIn(t, repo, "commit", "--quiet", "-m", "first")
+	sha1 = gitIn(t, repo, "rev-parse", "HEAD")
+
+	write("touched.txt", "v2\n")
+	gitIn(t, repo, "add", "-A")
+	gitIn(t, repo, "commit", "--quiet", "-m", "second")
+	sha2 = gitIn(t, repo, "rev-parse", "HEAD")
+
+	return repo, sha1, sha2
+}
+
+// TestExtendedStats exercises WithExtendedStats against both backends.
+func TestExtendedStats(t *testing.T) {
+	repo, sha1, sha2 := buildHistoryFixture(t)
+	for _, be := range backends(t) {
+		t.Run(be.name, func(t *testing.T) {
+			// Without WithExtendedStats, Sys() is nil.
+			fsys, err := Open(repo, sha2, be.opts...)
+			assert.NoError(t, err)
+			fi, err := fsys.Stat("touched.txt")
+			assert.NoError(t, err)
+			assert.Nil(t, fi.Sys())
+
+			opts := append(append([]Option{}, be.opts...), WithExtendedStats(-1))
+			fsys, err = Open(repo, sha2, opts...)
+			assert.NoError(t, err)
+
+			// touched.txt was changed by sha2 itself.
+			fi, err = fsys.Stat("touched.txt")
+			assert.NoError(t, err)
+			es, ok := fi.Sys().(*ExtendedStat)
+			assert.True(t, ok, "Sys() should be *ExtendedStat")
+			assert.NoError(t, es.Err)
+			assert.Equals(t, es.Commit, sha2)
+			assert.Equals(t, es.Author, "Test User")
+			assert.Equals(t, es.AuthorEmail, "test@example.com")
+			assert.False(t, es.Date.IsZero())
+
+			// old.txt was last touched by sha1 and never changed again.
+			fi, err = fsys.Stat("old.txt")
+			assert.NoError(t, err)
+			es = fi.Sys().(*ExtendedStat)
+			assert.Equals(t, es.Commit, sha1)
+
+			// The root has no history of its own; it reports the pinned
+			// commit directly.
+			fi, err = fsys.Stat(".")
+			assert.NoError(t, err)
+			es = fi.Sys().(*ExtendedStat)
+			assert.Equals(t, es.Commit, sha2)
+
+			// ReadDir entries carry it too, not just Stat/Open results.
+			entries, err := fsys.ReadDir(".")
+			assert.NoError(t, err)
+			for _, e := range entries {
+				info, err := e.Info()
+				assert.NoError(t, err)
+				_, ok := info.Sys().(*ExtendedStat)
+				assert.True(t, ok, "ReadDir entry Sys() should be *ExtendedStat")
+			}
+		})
+	}
+}
+
+// TestExtendedStatsMaxCommitsFallback verifies that a search window too
+// small to reach the true last-touching commit falls back to the pinned
+// commit itself, never something older found outside the window and never
+// something newer than the pinned commit.
+func TestExtendedStatsMaxCommitsFallback(t *testing.T) {
+	repo, _, sha2 := buildHistoryFixture(t)
+	for _, be := range backends(t) {
+		t.Run(be.name, func(t *testing.T) {
+			opts := append(append([]Option{}, be.opts...), WithExtendedStats(1))
+			fsys, err := Open(repo, sha2, opts...)
+			assert.NoError(t, err)
+
+			// old.txt was last touched by the first commit, one commit
+			// back from sha2; a 1-commit search window can't reach it.
+			fi, err := fsys.Stat("old.txt")
+			assert.NoError(t, err)
+			es := fi.Sys().(*ExtendedStat)
+			assert.Equals(t, es.Commit, sha2)
+		})
+	}
+}
+
 func TestModeFromGit(t *testing.T) {
 	assert.Equals(t, modeFromGit(0o040000), fs.ModeDir|0o755)
 	assert.Equals(t, modeFromGit(0o100644), fs.FileMode(0o644))

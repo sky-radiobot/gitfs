@@ -20,6 +20,8 @@ type fileInfo struct {
 	size    int64
 	mode    fs.FileMode
 	modTime time.Time
+	g       *GitFS // for lazy Sys() computation; see WithExtendedStats
+	path    string // repo-relative path, for lazy Sys() computation
 }
 
 func (fi fileInfo) Name() string       { return fi.name }
@@ -27,7 +29,32 @@ func (fi fileInfo) Size() int64        { return fi.size }
 func (fi fileInfo) Mode() fs.FileMode  { return fi.mode }
 func (fi fileInfo) ModTime() time.Time { return fi.modTime }
 func (fi fileInfo) IsDir() bool        { return fi.mode.IsDir() }
-func (fi fileInfo) Sys() any           { return nil }
+
+// Sys returns nil unless the GitFS was opened with WithExtendedStats, in
+// which case it returns an *ExtendedStat computed lazily (right here, on
+// call), not up front.
+func (fi fileInfo) Sys() any {
+	if fi.g == nil || !fi.g.extendedStats {
+		return nil
+	}
+	ci, err := fi.g.be.lastCommit(fi.path, fi.g.maxCommits)
+	if err != nil {
+		return &ExtendedStat{Err: err}
+	}
+	return &ExtendedStat{Commit: ci.sha, Author: ci.author, AuthorEmail: ci.email, Date: ci.date}
+}
+
+// ExtendedStat is returned by an fs.FileInfo's Sys() method when the GitFS
+// was opened with WithExtendedStats: the last commit, at or before the
+// pinned commit, that touched that entry's path. Err is set (and the
+// other fields left zero) if the lookup itself failed.
+type ExtendedStat struct {
+	Commit      string // full 40-hex commit SHA
+	Author      string
+	AuthorEmail string
+	Date        time.Time
+	Err         error
+}
 
 // dirEntry adapts fileInfo to fs.DirEntry.
 type dirEntry struct {

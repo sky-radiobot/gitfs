@@ -177,21 +177,28 @@ func lsCommand(sparse *string) *cobra.Command {
 		Args:              cobra.MinimumNArgs(1),
 		ValidArgsFunction: completeRef,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			tg, err := openFS(args[0], *sparse)
-			if err != nil {
-				return err
-			}
 			blame := cmd.Flags().Changed("blame")
 			if blame {
 				long = true
 			}
 			blameLimit := unboundedBlame
 			if blame && blameLimitFlag != "unbounded" {
+				var err error
 				blameLimit, err = strconv.Atoi(blameLimitFlag)
 				if err != nil || blameLimit < 0 {
 					return fmt.Errorf("invalid --blame limit %q: must be a non-negative integer", blameLimitFlag)
 				}
 			}
+
+			var extraOpts []gitfs.Option
+			if blame {
+				extraOpts = append(extraOpts, gitfs.WithExtendedStats(blameLimit))
+			}
+			tg, err := openFS(args[0], *sparse, extraOpts...)
+			if err != nil {
+				return err
+			}
+
 			paths := args[1:]
 			if len(paths) == 0 {
 				paths = []string{"."}
@@ -210,18 +217,21 @@ func lsCommand(sparse *string) *cobra.Command {
 					fmt.Printf("%s:\n", name)
 				}
 			}
-			printEntry := func(displayName, repoRelPath string, info fs.FileInfo) error {
+			printEntry := func(displayName string, info fs.FileInfo) error {
 				switch {
 				case !long:
 					fmt.Println(displayName)
 				case !blame:
 					fmt.Printf("%s\t%d\t%s\t%s\n", info.Mode(), info.Size(), info.ModTime().Format("2006-01-02"), displayName)
 				default:
-					bi, err := lastTouch(tg.gitBin, tg.repoPath, tg.sha, repoRelPath, blameLimit)
-					if err != nil {
-						return err
+					es, _ := info.Sys().(*gitfs.ExtendedStat)
+					if es == nil {
+						return fmt.Errorf("gitfs: no extended stats for %s", displayName)
 					}
-					fmt.Printf("%s\t%d\t%s\t%s\t%s\t%s\n", info.Mode(), info.Size(), bi.date, bi.author, bi.sha, displayName)
+					if es.Err != nil {
+						return es.Err
+					}
+					fmt.Printf("%s\t%d\t%s\t%s\t%s\t%s\n", info.Mode(), info.Size(), es.Date.Format("2006-01-02"), es.Author, shortSHA(es.Commit), displayName)
 				}
 				return nil
 			}
@@ -232,7 +242,7 @@ func lsCommand(sparse *string) *cobra.Command {
 					return err
 				}
 				if !info.IsDir() {
-					if err := printEntry(displayPath(tg.prefix, t), t, info); err != nil {
+					if err := printEntry(displayPath(tg.prefix, t), info); err != nil {
 						return err
 					}
 					printedAny = true
@@ -248,7 +258,7 @@ func lsCommand(sparse *string) *cobra.Command {
 					if err != nil {
 						return err
 					}
-					if err := printEntry(e.Name(), path.Join(t, e.Name()), entryInfo); err != nil {
+					if err := printEntry(e.Name(), entryInfo); err != nil {
 						return err
 					}
 				}
@@ -394,23 +404,19 @@ func looksLikeHexPrefix(s string) bool {
 }
 
 // target bundles what cat/ls need once ref has been resolved: the pinned
-// GitFS, the cwd's repo-root-relative prefix, and (for ls --blame, which
-// needs its own git-log lookups alongside the GitFS reads) the git binary,
-// repo path, and resolved commit SHA.
+// GitFS and the cwd's repo-root-relative prefix.
 type target struct {
-	fsys     *gitfs.GitFS
-	prefix   string
-	gitBin   string
-	repoPath string
-	sha      string
+	fsys   *gitfs.GitFS
+	prefix string
 }
 
 // openFS resolves ref against the repository discovered from the current
-// directory and opens the pinned GitFS. GIT_BINARY, if set, selects the
-// shell-out backend; otherwise gitfs reads via the pure-Go go-git backend,
-// though GIT_BINARY (or "git" on PATH) is still used for the CLI's own ref
-// resolution and repo discovery.
-func openFS(ref, sparse string) (*target, error) {
+// directory and opens the pinned GitFS, with any extraOpts (e.g.
+// gitfs.WithExtendedStats) applied alongside GIT_BINARY/--sparse.
+// GIT_BINARY, if set, selects the shell-out backend; otherwise gitfs reads
+// via the pure-Go go-git backend, though GIT_BINARY (or "git" on PATH) is
+// still used for the CLI's own ref resolution and repo discovery.
+func openFS(ref, sparse string, extraOpts ...gitfs.Option) (*target, error) {
 	gitBinaryEnv := os.Getenv("GIT_BINARY")
 	gitBin := gitBinaryEnv
 	if gitBin == "" {
@@ -437,12 +443,13 @@ func openFS(ref, sparse string) (*target, error) {
 	if sparse != "" {
 		opts = append(opts, gitfs.WithSparse(strings.Split(sparse, ",")...))
 	}
+	opts = append(opts, extraOpts...)
 
 	fsys, err := gitfs.Open(repoPath, sha, opts...)
 	if err != nil {
 		return nil, err
 	}
-	return &target{fsys: fsys, prefix: prefix, gitBin: gitBin, repoPath: repoPath, sha: sha}, nil
+	return &target{fsys: fsys, prefix: prefix}, nil
 }
 
 // discoverRepo locates the repository containing the current directory, the
@@ -488,55 +495,14 @@ func resolveSHA(gitBin, repoPath, ref string) (string, error) {
 	return sha, nil
 }
 
-// blameInfo is the last commit, at or before some reference commit, that
-// touched a given path.
-type blameInfo struct {
-	sha    string
-	date   string
-	author string
-}
-
-// lastTouch finds the last commit that changed path, searching sha's
-// ancestry. If limit is non-negative, the search is bounded to sha's most
-// recent limit ancestor commits (via a sha~limit..sha range) rather than
-// walking arbitrarily far back into history; if that bound turns up
-// nothing (including when sha has fewer than limit ancestors, in which
-// case the bounded range itself doesn't exist), lastTouch falls back to
-// sha's own commit info. Either way the result is never a commit newer
-// than sha.
-func lastTouch(gitBin, repoPath, sha, path string, limit int) (blameInfo, error) {
-	revRange := sha
-	if limit >= 0 {
-		if _, err := runGit(gitBin, repoPath, "rev-parse", "--verify", fmt.Sprintf("%s~%d", sha, limit)); err == nil {
-			revRange = fmt.Sprintf("%s~%d..%s", sha, limit, sha)
-		}
+// shortSHA truncates a full 40-hex commit SHA to a short, git-style
+// display form.
+func shortSHA(sha string) string {
+	const n = 7
+	if len(sha) < n {
+		return sha
 	}
-	bi, err := logOneCommit(gitBin, repoPath, revRange, "--", path)
-	if err != nil {
-		return blameInfo{}, err
-	}
-	if bi != (blameInfo{}) {
-		return bi, nil
-	}
-	return logOneCommit(gitBin, repoPath, sha)
-}
-
-// logOneCommit runs `git log --max-count=1` with extraArgs appended,
-// returning the zero blameInfo (not an error) if there's no match.
-func logOneCommit(gitBin, repoPath string, extraArgs ...string) (blameInfo, error) {
-	args := append([]string{"log", "--max-count=1", "--date=short", "--format=%h%x09%ad%x09%an"}, extraArgs...)
-	out, err := runGit(gitBin, repoPath, args...)
-	if err != nil {
-		return blameInfo{}, err
-	}
-	if out == "" {
-		return blameInfo{}, nil
-	}
-	fields := strings.Split(out, "\t")
-	if len(fields) != 3 {
-		return blameInfo{}, fmt.Errorf("unexpected git log output: %q", out)
-	}
-	return blameInfo{sha: fields[0], date: fields[1], author: fields[2]}, nil
+	return sha[:n]
 }
 
 // looksLikeFullSHA reports whether s is a full 40-hex object id.

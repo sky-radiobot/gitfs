@@ -78,6 +78,73 @@ func (b *execBackend) readBlob(hash string) ([]byte, error) {
 	return b.git("cat-file", "blob", hash)
 }
 
+func (b *execBackend) lastCommit(p string, maxCommits int) (commitInfo, error) {
+	if p == "" {
+		// The root has no meaningful "last touched" commit of its own;
+		// report the pinned commit directly rather than defining one.
+		return b.logOneCommit(b.sha)
+	}
+
+	revRange := b.sha
+	if maxCommits >= 0 {
+		if _, err := b.git("rev-parse", "--verify", fmt.Sprintf("%s~%d", b.sha, maxCommits)); err == nil {
+			revRange = fmt.Sprintf("%s~%d..%s", b.sha, maxCommits, b.sha)
+		}
+		// else: the pinned commit has fewer than maxCommits ancestors;
+		// search all of them, still within budget.
+	}
+	ci, ok, err := b.logOneCommitPath(revRange, p)
+	if err != nil {
+		return commitInfo{}, err
+	}
+	if ok {
+		return ci, nil
+	}
+	// Nothing found within the bound: report the pinned commit itself
+	// (not a further, unbounded search), matching gogitBackend.
+	return b.logOneCommit(b.sha)
+}
+
+// logOneCommit returns the info for a single resolvable commit-ish (no
+// pathspec filtering).
+func (b *execBackend) logOneCommit(revOrRange string) (commitInfo, error) {
+	ci, ok, err := b.logOneCommitPath(revOrRange, "")
+	if err != nil {
+		return commitInfo{}, err
+	}
+	if !ok {
+		return commitInfo{}, fmt.Errorf("gitfs: no commit found for %s", revOrRange)
+	}
+	return ci, nil
+}
+
+// logOneCommitPath runs `git log --max-count=1` over revOrRange, optionally
+// filtered to path (path == "" means no pathspec). ok is false, not an
+// error, when nothing matches.
+func (b *execBackend) logOneCommitPath(revOrRange, path string) (ci commitInfo, ok bool, err error) {
+	args := []string{"log", "--max-count=1", "--format=%H%x09%aI%x09%an%x09%ae", revOrRange}
+	if path != "" {
+		args = append(args, "--", path)
+	}
+	out, err := b.git(args...)
+	if err != nil {
+		return commitInfo{}, false, err
+	}
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		return commitInfo{}, false, nil
+	}
+	fields := strings.Split(line, "\t")
+	if len(fields) != 4 {
+		return commitInfo{}, false, fmt.Errorf("gitfs: unexpected git log output: %q", line)
+	}
+	date, err := time.Parse(time.RFC3339, fields[1])
+	if err != nil {
+		return commitInfo{}, false, err
+	}
+	return commitInfo{sha: fields[0], date: date, author: fields[2], email: fields[3]}, true, nil
+}
+
 // git runs a command against the resolved git directory.
 func (b *execBackend) git(args ...string) ([]byte, error) {
 	return b.run(append([]string{"--git-dir=" + b.gitDir}, args...)...)

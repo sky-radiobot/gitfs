@@ -35,7 +35,7 @@ first use.
 never followed — reading one returns the link target text. Submodules
 (`160000` entries) appear in listings but error on open.
 
-Two functional options tune how a `GitFS` reads:
+Functional options tune how a `GitFS` reads:
 
 - `gitfs.WithGitBinary(path)` — shell out to the `git` binary at `path`
   instead of the default pure-Go [go-git](https://github.com/go-git/go-git)
@@ -44,6 +44,15 @@ Two functional options tune how a `GitFS` reads:
   repo-relative subtrees; everything outside them behaves exactly as if it
   doesn't exist, while ancestor directories stay traversable so the sparse
   paths remain reachable.
+- `gitfs.WithExtendedStats(maxCommits)` — make every `fs.FileInfo`'s `Sys()`
+  return a `*gitfs.ExtendedStat` (`Commit`, `Author`, `AuthorEmail`, `Date`,
+  `Err`): the last commit, at or before the pinned one, that touched that
+  entry's path — computed lazily, on first `Sys()` call, not up front.
+  `maxCommits` bounds how many ancestor commits are searched before falling
+  back to the pinned commit's own info (0 examines only the pinned commit
+  itself; negative is unbounded, which can be slow on a large history); the
+  result is never a commit newer than the pinned one, though it may be
+  imprecise under a tight bound.
 
 ## CLI
 
@@ -81,13 +90,13 @@ quoted/escaped (`'sc*'`, not `sc*`) to stop your shell from expanding it
 against local files before gitfs ever sees it.
 
 `ls --blame[=LIMIT]` (implies `-l`) adds, per file, the last commit at or
-before REF that touched it — its date, author, and short SHA — as
-`mode\tsize\tdate\tauthor\tcommit\tname`. This is a `git log -1 -- path`
-lookup per file (one commit per file), not full per-line blame. Without a
-`LIMIT`, the search walks REF's entire ancestry, which can be slow on a
-large history; `--blame=LIMIT` bounds it to `LIMIT` ancestor commits,
-falling back to REF's own commit if nothing turns up within that window —
-always at or before REF, but possibly imprecise.
+before REF that touched it — its date, author, and short (7-char) SHA — as
+`mode\tsize\tdate\tauthor\tcommit\tname`. It's a thin wrapper over
+`gitfs.WithExtendedStats` (see above): one commit per file, not full
+per-line blame. Without a `LIMIT`, the search walks REF's entire ancestry,
+which can be slow on a large history; `--blame=LIMIT` bounds it to `LIMIT`
+ancestor commits, falling back to REF's own commit if nothing turns up
+within that window — always at or before REF, but possibly imprecise.
 
 - `--sparse p1,p2` — restrict the filesystem to the given repo-relative
   subtrees.

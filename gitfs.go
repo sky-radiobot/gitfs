@@ -18,10 +18,12 @@ import (
 
 // GitFS is a read-only filesystem backed by the tree of a git commit.
 type GitFS struct {
-	be      backend
-	modTime time.Time
-	prefix  string   // repo-relative root of this (sub)filesystem
-	sparse  []string // repo-relative paths visible through this FS; nil = everything
+	be            backend
+	modTime       time.Time
+	prefix        string   // repo-relative root of this (sub)filesystem
+	sparse        []string // repo-relative paths visible through this FS; nil = everything
+	extendedStats bool     // WithExtendedStats: FileInfo.Sys() returns *ExtendedStat
+	maxCommits    int      // max # of ancestor commits to read per entry for extended stats; negative means unbounded
 }
 
 var (
@@ -37,8 +39,10 @@ var (
 type Option func(*config)
 
 type config struct {
-	gitBinary string
-	sparse    []string
+	gitBinary     string
+	sparse        []string
+	extendedStats bool
+	maxCommits    int // max # of ancestor commits to read per entry for extended stats; negative means unbounded
 }
 
 // WithGitBinary makes the FS read by shelling out to the git binary at
@@ -53,6 +57,24 @@ func WithGitBinary(path string) Option {
 // directories stay traversable so the sparse paths remain reachable.
 func WithSparse(paths ...string) Option {
 	return func(c *config) { c.sparse = append(c.sparse, paths...) }
+}
+
+// WithExtendedStats makes every fs.FileInfo's Sys() method return an
+// *ExtendedStat: the last commit, at or before the pinned one, that
+// touched that entry's path (its SHA, author, and date) — computed
+// lazily, on first Sys() call, not up front.
+//
+// maxCommits bounds how many ancestor commits of the pinned commit are
+// searched before giving up and reporting the pinned commit's own info
+// instead (never a commit newer than the pinned one, though possibly
+// imprecise under a tight bound); 0 means only the pinned commit itself is
+// examined, and a negative value means unbounded, which can be slow on a
+// large history.
+func WithExtendedStats(maxCommits int) Option {
+	return func(c *config) {
+		c.extendedStats = true
+		c.maxCommits = maxCommits
+	}
 }
 
 // Open opens the repository at repoPath (bare or non-bare) pinned to the
@@ -85,7 +107,7 @@ func Open(repoPath string, sha string, opts ...Option) (*GitFS, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gitfs: %s: %w", sha, err)
 	}
-	return &GitFS{be: be, modTime: modTime, sparse: sparse}, nil
+	return &GitFS{be: be, modTime: modTime, sparse: sparse, extendedStats: cfg.extendedStats, maxCommits: cfg.maxCommits}, nil
 }
 
 // Open opens name for reading and returns the file handle. Directory handles
@@ -102,7 +124,7 @@ func (g *GitFS) Open(name string) (fs.File, error) {
 	if err != nil {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: err}
 	}
-	info := g.info(e)
+	info := g.info(e, p)
 	if e.mode.IsDir() {
 		return &file{info: info, g: g, path: p}, nil
 	}
@@ -170,7 +192,7 @@ func (g *GitFS) Stat(name string) (fs.FileInfo, error) {
 	if !e.mode.IsDir() && !g.readable(p) {
 		return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrNotExist}
 	}
-	return g.info(e), nil
+	return g.info(e, p), nil
 }
 
 // Glob returns the names of all visible files matching pattern, per
@@ -230,17 +252,18 @@ func (g *GitFS) dirEntries(p string) ([]fs.DirEntry, error) {
 	}
 	out := make([]fs.DirEntry, 0, len(entries))
 	for _, e := range entries {
-		if !g.visible(joinPath(p, e.name)) {
+		ep := joinPath(p, e.name)
+		if !g.visible(ep) {
 			continue
 		}
-		out = append(out, dirEntry{g.info(e)})
+		out = append(out, dirEntry{g.info(e, ep)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
 	return out, nil
 }
 
-func (g *GitFS) info(e entry) fileInfo {
-	return fileInfo{name: e.name, size: e.size, mode: e.mode, modTime: g.modTime}
+func (g *GitFS) info(e entry, p string) fileInfo {
+	return fileInfo{name: e.name, size: e.size, mode: e.mode, modTime: g.modTime, g: g, path: p}
 }
 
 // visible reports whether repo-relative path p may be seen through this FS:
