@@ -175,6 +175,41 @@ func lsDate(t time.Time) string {
 	return t.Format("Jan _2  2006")
 }
 
+// printTable prints rows as space-aligned columns (no tabs): each column
+// is padded to its max width across rows, plus one space of separation.
+// sizeCol, if >= 0, is right-aligned (like ls -l's size column); every
+// other column is left-aligned. The last column (name) is never padded,
+// since it has nothing after it to align with.
+func printTable(rows [][]string, sizeCol int) {
+	if len(rows) == 0 {
+		return
+	}
+	numCols := len(rows[0])
+	widths := make([]int, numCols)
+	for _, r := range rows {
+		for i, f := range r {
+			if len(f) > widths[i] {
+				widths[i] = len(f)
+			}
+		}
+	}
+	for _, r := range rows {
+		var b strings.Builder
+		for i, f := range r {
+			if i == numCols-1 {
+				b.WriteString(f)
+				continue
+			}
+			if i == sizeCol {
+				fmt.Fprintf(&b, "%*s ", widths[i], f)
+			} else {
+				fmt.Fprintf(&b, "%-*s ", widths[i], f)
+			}
+		}
+		fmt.Println(b.String())
+	}
+}
+
 func lsCommand(sparse *string) *cobra.Command {
 	var long bool
 	var blameLimitFlag string
@@ -231,23 +266,31 @@ func lsCommand(sparse *string) *cobra.Command {
 					fmt.Printf("%s:\n", name)
 				}
 			}
-			printEntry := func(displayName string, info fs.FileInfo) error {
+			// sizeCol is the row index of the size column, right-aligned by
+			// printTable; -1 (plain, name-only rows) means no such column.
+			sizeCol := -1
+			switch {
+			case blame:
+				sizeCol = 2
+			case long:
+				sizeCol = 1
+			}
+			row := func(displayName string, info fs.FileInfo) ([]string, error) {
 				switch {
 				case !long:
-					fmt.Println(displayName)
+					return []string{displayName}, nil
 				case !blame:
-					fmt.Printf("%s\t%d\t%s\t%s\n", info.Mode(), info.Size(), lsDate(info.ModTime()), displayName)
+					return []string{info.Mode().String(), strconv.FormatInt(info.Size(), 10), lsDate(info.ModTime()), displayName}, nil
 				default:
 					es, _ := info.Sys().(*gitfs.ExtendedStat)
 					if es == nil {
-						return fmt.Errorf("gitfs: no extended stats for %s", displayName)
+						return nil, fmt.Errorf("gitfs: no extended stats for %s", displayName)
 					}
 					if es.Err != nil {
-						return es.Err
+						return nil, es.Err
 					}
-					fmt.Printf("%s\t%s\t%d\t%s\t%s\t%s\n", info.Mode(), es.AuthorEmail, info.Size(), lsDate(es.Date), shortSHA(es.Commit), displayName)
+					return []string{info.Mode().String(), es.AuthorEmail, strconv.FormatInt(info.Size(), 10), lsDate(es.Date), shortSHA(es.Commit), displayName}, nil
 				}
-				return nil
 			}
 
 			for _, t := range targets {
@@ -256,9 +299,11 @@ func lsCommand(sparse *string) *cobra.Command {
 					return err
 				}
 				if !info.IsDir() {
-					if err := printEntry(displayPath(tg.prefix, t), info); err != nil {
+					r, err := row(displayPath(tg.prefix, t), info)
+					if err != nil {
 						return err
 					}
+					printTable([][]string{r}, sizeCol)
 					printedAny = true
 					continue
 				}
@@ -267,15 +312,19 @@ func lsCommand(sparse *string) *cobra.Command {
 					return err
 				}
 				printHeader(displayPath(tg.prefix, t))
+				rows := make([][]string, 0, len(entries))
 				for _, e := range entries {
 					entryInfo, err := e.Info()
 					if err != nil {
 						return err
 					}
-					if err := printEntry(e.Name(), entryInfo); err != nil {
+					r, err := row(e.Name(), entryInfo)
+					if err != nil {
 						return err
 					}
+					rows = append(rows, r)
 				}
+				printTable(rows, sizeCol)
 				printedAny = true
 			}
 			return nil

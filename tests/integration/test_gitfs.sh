@@ -105,20 +105,25 @@ test_ls_root_default_is_plain_names() {
 test_ls_long_matches_git() {
   local expected
   expected=$(git -C "$REPO" ls-tree --name-only "$SHA" | LC_ALL=C sort)
-  assert_eq "$expected" "$("$GITFS_BIN" ls "$SHA" -l | cut -f4-)"
-  assert_eq "$expected" "$(GIT_BINARY="$GIT_BIN" "$GITFS_BIN" ls "$SHA" -l | cut -f4-)"
+  # The name is always the last whitespace-separated field (even though
+  # the date column itself is multiple words, e.g. "Aug 19 23:31"), so
+  # awk's $NF reaches it regardless.
+  assert_eq "$expected" "$("$GITFS_BIN" ls "$SHA" -l | awk '{print $NF}')"
+  assert_eq "$expected" "$(GIT_BINARY="$GIT_BIN" "$GITFS_BIN" ls "$SHA" -l | awk '{print $NF}')"
 }
 
 test_ls_long_shows_ref_date() {
   local out size
   size=$(git -C "$REPO" cat-file -s "$SHA:README.md")
   out=$("$GITFS_BIN" ls "$SHA" -l README.md)
-  assert_eq "-rw-r--r--${TAB}${size}${TAB}${DATE}${TAB}README.md" "$out"
+  # A lone row's columns aren't padded beyond their own width (nothing
+  # else in the "table" to align against), so this is just single spaces.
+  assert_eq "-rw-r--r-- ${size} ${DATE} README.md" "$out"
 }
 
 test_ls_subdirectory() {
   both "app" ls "$SHA" src
-  both "drwxr-xr-x${TAB}0${TAB}${DATE}${TAB}app" ls "$SHA" -l src
+  both "drwxr-xr-x 0 ${DATE} app" ls "$SHA" -l src
 }
 
 test_ls_multiple_paths_prints_headers() {
@@ -192,10 +197,14 @@ test_ls_blame_limit_falls_back_to_ref_commit() {
 }
 
 test_ls_blame_implies_long_format() {
-  local out fields
+  local out
   out=$("$GITFS_BIN" ls --blame "$SHA" README.md)
-  fields=$(awk -F'\t' '{print NF}' <<<"$out")
-  assert_eq "6" "$fields" "expected mode/size/date/author/commit/name: $out"
+  # mode, author email, size, date (3 words), short commit SHA, name.
+  if [[ "$out" =~ ^-[a-z-]{9}\ +test@example\.com\ +[0-9]+\ +[A-Za-z]+\ +[0-9]+\ +[0-9:]+\ +[0-9a-f]{7}\ +README\.md$ ]]; then
+    pass
+  else
+    fail "expected mode/author-email/size/date/commit/name: $out"
+  fi
 }
 
 test_ls_blame_rejects_invalid_limit() {

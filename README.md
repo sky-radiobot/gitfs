@@ -81,10 +81,12 @@ $ gitfs cat main README.md
 ...
 ```
 
-`ls` defaults to plain names, one per line; `-l` switches to
-`mode\tsize\tdate\tname` (date is REF's commit date, the same for every
+`ls` defaults to plain names, one per line; `-l` switches to space-aligned
+columns like plain `ls -l` — mode, size (right-aligned), date, name — with
+no tabs; column widths are computed per listing (each directory argument
+gets its own aligned block). Date is REF's commit date, the same for every
 row, formatted like plain `ls -l` — `Aug 19 22:03`, or `Oct 18  2024` for
-anything more than ~6 months old or in the future). Both subcommands
+anything more than ~6 months old or in the future. Both subcommands
 accept multiple paths, and any of them may be a
 `path.Match`-style glob (e.g. `gitfs ls main 'sc*'`) — matched against the
 tree at REF, not your local filesystem, so the glob typically needs to be
@@ -93,9 +95,9 @@ against local files before gitfs ever sees it.
 
 `ls --blame[=LIMIT]` (implies `-l`) adds, per file, the last commit at or
 before REF that touched it — its author's email, date, and short (7-char)
-SHA — as `mode\tauthor-email\tsize\tdate\tcommit\tname` (owner placed
-right after mode, matching plain `ls -l`'s column order). It's a thin
-wrapper over
+SHA — as columns mode, author email, size, date, commit, name (owner
+placed right after mode, matching plain `ls -l`'s column order). It's a
+thin wrapper over
 `gitfs.WithExtendedStats` (see above): one commit per file, not full
 per-line blame. Without a `LIMIT`, the search walks REF's entire ancestry,
 which can be slow on a large history; `--blame=LIMIT` bounds it to `LIMIT`
