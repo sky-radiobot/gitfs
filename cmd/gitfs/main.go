@@ -22,22 +22,88 @@ func fatal(err error) {
 	os.Exit(1)
 }
 
+// cobra's own defaults (github.com/spf13/cobra@v1.10.2, command.go), copied
+// verbatim so cat/ls can opt back into them explicitly: root below installs
+// a customized template, which children otherwise inherit.
+const (
+	cobraDefaultUsageTemplate = `Usage:{{if .Runnable}}
+  {{.UseLine}}{{end}}{{if .HasAvailableSubCommands}}
+  {{.CommandPath}} [command]{{end}}{{if gt (len .Aliases) 0}}
+
+Aliases:
+  {{.NameAndAliases}}{{end}}{{if .HasExample}}
+
+Examples:
+{{.Example}}{{end}}{{if .HasAvailableSubCommands}}{{$cmds := .Commands}}{{if eq (len .Groups) 0}}
+
+Available Commands:{{range $cmds}}{{if (or .IsAvailableCommand (eq .Name "help"))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{else}}{{range $group := .Groups}}
+
+{{.Title}}{{range $cmds}}{{if (and (eq .GroupID $group.ID) (or .IsAvailableCommand (eq .Name "help")))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{if not .AllChildCommandsHaveGroup}}
+
+Additional Commands:{{range $cmds}}{{if (and (eq .GroupID "") (or .IsAvailableCommand (eq .Name "help")))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{end}}{{end}}{{if .HasAvailableLocalFlags}}
+
+Flags:
+{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasAvailableInheritedFlags}}
+
+Global Flags:
+{{.InheritedFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasHelpSubCommands}}
+
+Additional help topics:{{range .Commands}}{{if .IsAdditionalHelpTopicCommand}}
+  {{rpad .CommandPath .CommandPathPadding}} {{.Short}}{{end}}{{end}}{{end}}{{if .HasAvailableSubCommands}}
+
+Use "{{.CommandPath}} [command] --help" for more information about a command.{{end}}
+`
+	cobraDefaultHelpTemplate = `{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
+
+{{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}`
+)
+
+// rootUsageTemplate lists cat/ls under "Available Commands:" (via the
+// "gitfs" command group below) ahead of cobra's built-in completion/help
+// under "Other Commands:", and moves the GIT_BINARY note (root.Long) below
+// the command list rather than above it, next to the flags it explains.
+const rootUsageTemplate = `Usage:
+  {{.CommandPath}} [command]{{$cmds := .Commands}}{{range $group := .Groups}}
+
+{{.Title}}{{range $cmds}}{{if (and (eq .GroupID $group.ID) (or .IsAvailableCommand (eq .Name "help")))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{if not .AllChildCommandsHaveGroup}}
+
+Other Commands:{{range $cmds}}{{if (and (eq .GroupID "") (or .IsAvailableCommand (eq .Name "help")))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{with .Long}}
+
+{{. | trimTrailingWhitespaces}}{{end}}{{if .HasAvailableLocalFlags}}
+
+Global Flags:
+{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}
+
+Use "{{.CommandPath}} [command] --help" for more information about a command.
+`
+
 func main() {
 	var sparse string
 
 	root := &cobra.Command{
-		Use:   "gitfs",
-		Short: "Read a git commit's tree without checking it out",
-		Long: "REF is a full commit SHA or anything the git CLI can resolve to one\n" +
-			"(branch, tag, short SHA, HEAD, ...). The repository is discovered\n" +
-			"from the current directory, the same way git itself does.\n\n" +
-			"Set GIT_BINARY to shell out to a specific git binary instead of using\n" +
-			"the built-in go-git backend.",
+		Use:           "gitfs",
+		Short:         "Read a git commit's tree without checking it out",
+		Long:          "Set GIT_BINARY to shell out to a specific git binary instead of using\nthe built-in go-git backend.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 	root.PersistentFlags().StringVar(&sparse, "sparse", "", "comma-separated repo-relative paths to restrict the filesystem to")
-	root.AddCommand(catCommand(&sparse), lsCommand(&sparse))
+	root.AddGroup(&cobra.Group{ID: "gitfs", Title: "Available Commands:"})
+	root.SetUsageTemplate(rootUsageTemplate)
+	root.SetHelpTemplate("{{.UsageString}}\n")
+
+	catCmd, lsCmd := catCommand(&sparse), lsCommand(&sparse)
+	catCmd.GroupID, lsCmd.GroupID = "gitfs", "gitfs"
+	for _, c := range []*cobra.Command{catCmd, lsCmd} {
+		c.SetUsageTemplate(cobraDefaultUsageTemplate)
+		c.SetHelpTemplate(cobraDefaultHelpTemplate)
+	}
+	root.AddCommand(catCmd, lsCmd)
 
 	if err := root.Execute(); err != nil {
 		fatal(err)
@@ -46,9 +112,10 @@ func main() {
 
 func catCommand(sparse *string) *cobra.Command {
 	return &cobra.Command{
-		Use:   "cat REF PATH [PATH...]",
-		Short: "print the content of one or more files at REF",
-		Args:  cobra.MinimumNArgs(2),
+		Use:               "cat REF PATH [PATH...]",
+		Short:             "print the content of one or more files at REF",
+		Args:              cobra.MinimumNArgs(2),
+		ValidArgsFunction: completeRef,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fsys, prefix, err := openFS(args[0], *sparse)
 			if err != nil {
@@ -71,9 +138,10 @@ func catCommand(sparse *string) *cobra.Command {
 func lsCommand(sparse *string) *cobra.Command {
 	var long bool
 	cmd := &cobra.Command{
-		Use:   "ls REF [PATH...]",
-		Short: "list directory entries at REF",
-		Args:  cobra.MinimumNArgs(1),
+		Use:               "ls REF [PATH...]",
+		Short:             "list directory entries at REF",
+		Args:              cobra.MinimumNArgs(1),
+		ValidArgsFunction: completeRef,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fsys, prefix, err := openFS(args[0], *sparse)
 			if err != nil {
@@ -116,6 +184,41 @@ func lsCommand(sparse *string) *cobra.Command {
 // printInfo prints "<mode>\t<size>\t<name>".
 func printInfo(fi fs.FileInfo) {
 	fmt.Printf("%s\t%d\t%s\n", fi.Mode(), fi.Size(), fi.Name())
+}
+
+// completeRef suggests REF completions (local branches, tags, and HEAD) for
+// the first positional argument of cat/ls; later arguments (PATH...) fall
+// back to the shell's default file completion, since they're resolved
+// against the current directory just like plain cat/ls.
+func completeRef(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) != 0 {
+		return nil, cobra.ShellCompDirectiveDefault
+	}
+
+	gitBin := os.Getenv("GIT_BINARY")
+	if gitBin == "" {
+		gitBin = "git"
+	}
+	repoPath, _, err := discoverRepo(gitBin)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	out, err := runGit(gitBin, repoPath, "for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/tags")
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	refs := []string{"HEAD"}
+	if out != "" {
+		refs = append(refs, strings.Split(out, "\n")...)
+	}
+	var matches []string
+	for _, r := range refs {
+		if strings.HasPrefix(r, toComplete) {
+			matches = append(matches, r)
+		}
+	}
+	return matches, cobra.ShellCompDirectiveNoFileComp
 }
 
 // openFS resolves ref against the repository discovered from the current

@@ -85,6 +85,11 @@ Built on [cobra](https://github.com/spf13/cobra): `cat`/`ls` are ordinary
 cobra subcommands with `REF` as their first positional argument, so e.g.
 `gitfs cat --help` works and documents `REF` correctly.
 
+Shell completion (`gitfs completion bash|zsh|fish|powershell`) completes
+subcommands out of the box, and `REF` against local branches, tags, and
+`HEAD` — e.g. `gitfs cat ma<TAB>` completes to `main`. `PATH` arguments
+fall back to the shell's normal file completion.
+
 ## Development
 
 - `make build` — build all packages

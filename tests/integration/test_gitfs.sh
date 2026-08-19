@@ -207,6 +207,51 @@ test_missing_path_fails() {
   both_fail ls "$SHA" nope
 }
 
+# has_line asserts that needle appears as an exact line in haystack (as
+# opposed to a mere substring match, which __complete's ":<directive>"
+# footer could otherwise confuse).
+has_line() {
+  local haystack="$1" needle="$2"
+  [[ $'\n'"$haystack"$'\n' == *$'\n'"$needle"$'\n'* ]]
+}
+
+test_completes_ref() {
+  local out
+  out=$("$GITFS_BIN" __complete cat "" 2>/dev/null)
+  for ref in HEAD main v1; do
+    if has_line "$out" "$ref"; then
+      pass
+    else
+      fail "expected '$ref' in ref completions: $out"
+    fi
+  done
+}
+
+test_ref_completion_respects_prefix() {
+  local out
+  out=$("$GITFS_BIN" __complete cat "v" 2>/dev/null)
+  if has_line "$out" v1; then
+    pass
+  else
+    fail "expected v1 in ref completions for prefix 'v': $out"
+  fi
+  if has_line "$out" main; then
+    fail "expected 'main' filtered out by prefix 'v': $out"
+  else
+    pass
+  fi
+}
+
+test_path_arg_falls_back_to_default_completion() {
+  local out
+  out=$("$GITFS_BIN" __complete cat "$SHA" "" 2>/dev/null)
+  if has_line "$out" ":0"; then
+    pass
+  else
+    fail "expected ':0' (ShellCompDirectiveDefault) for PATH-arg completion: $out"
+  fi
+}
+
 # -- run ----------------------------------------------------------------------
 
 run_tests
