@@ -90,8 +90,10 @@ quoted/escaped (`'sc*'`, not `sc*`) to stop your shell from expanding it
 against local files before gitfs ever sees it.
 
 `ls --blame[=LIMIT]` (implies `-l`) adds, per file, the last commit at or
-before REF that touched it — its date, author, and short (7-char) SHA — as
-`mode\tsize\tdate\tauthor\tcommit\tname`. It's a thin wrapper over
+before REF that touched it — its author's email, date, and short (7-char)
+SHA — as `mode\tauthor-email\tsize\tdate\tcommit\tname` (owner placed
+right after mode, matching plain `ls -l`'s column order). It's a thin
+wrapper over
 `gitfs.WithExtendedStats` (see above): one commit per file, not full
 per-line blame. Without a `LIMIT`, the search walks REF's entire ancestry,
 which can be slow on a large history; `--blame=LIMIT` bounds it to `LIMIT`

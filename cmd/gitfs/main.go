@@ -169,8 +169,8 @@ func lsCommand(sparse *string) *cobra.Command {
 		Short: "list directory entries at REF",
 		Long: "list directory entries at REF\n\n" + refHelp + "\n\n" +
 			"--blame adds, for each file, the last commit (at or before REF) that\n" +
-			"touched it: its date, author, and short SHA. Without a LIMIT, that\n" +
-			"search walks REF's full ancestry, which can be slow on a large\n" +
+			"touched it: its author's email, date, and short SHA. Without a LIMIT,\n" +
+			"that search walks REF's full ancestry, which can be slow on a large\n" +
 			"history; --blame=LIMIT bounds it to LIMIT ancestor commits, falling\n" +
 			"back to REF's own commit if no match turns up within that window --\n" +
 			"never a commit newer than REF, but possibly an imprecise one.",
@@ -231,7 +231,7 @@ func lsCommand(sparse *string) *cobra.Command {
 					if es.Err != nil {
 						return es.Err
 					}
-					fmt.Printf("%s\t%d\t%s\t%s\t%s\t%s\n", info.Mode(), info.Size(), es.Date.Format("2006-01-02"), es.Author, shortSHA(es.Commit), displayName)
+					fmt.Printf("%s\t%s\t%d\t%s\t%s\t%s\n", info.Mode(), es.AuthorEmail, info.Size(), es.Date.Format("2006-01-02"), shortSHA(es.Commit), displayName)
 				}
 				return nil
 			}
@@ -267,7 +267,7 @@ func lsCommand(sparse *string) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVarP(&long, "long", "l", false, "long format: mode, size, date, name (plus author and commit with --blame)")
+	cmd.Flags().BoolVarP(&long, "long", "l", false, "long format: mode, size, date, name (mode, author email, size, date, commit, name with --blame)")
 	cmd.Flags().StringVar(&blameLimitFlag, "blame", "", "show the last commit that touched each file; optional LIMIT bounds the ancestor-commit search depth (unbounded if given with no value)")
 	cmd.Flags().Lookup("blame").NoOptDefVal = "unbounded"
 	return cmd
