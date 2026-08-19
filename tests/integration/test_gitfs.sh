@@ -15,6 +15,7 @@ TAB=$'\t'
 REPO=""
 BARE=""
 SHA=""
+ORIG_PWD="$PWD"
 
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 export GIT_AUTHOR_NAME="Test User" GIT_AUTHOR_EMAIL=test@example.com
@@ -34,17 +35,20 @@ setup() {
   git -C "$REPO" add -A
   git -C "$REPO" commit --quiet -m initial
   SHA=$(git -C "$REPO" rev-parse HEAD)
+  git -C "$REPO" tag v1
   BARE=$(mktemp -d)
   git clone --quiet --bare "$REPO" "$BARE/repo.git"
+  cd "$REPO"
 }
 
 teardown() {
+  cd "$ORIG_PWD"
   [[ -n "$REPO" ]] && rm -rf "$REPO" && REPO=""
   [[ -n "$BARE" ]] && rm -rf "$BARE" && BARE=""
 }
 
 # both asserts that both backends print the expected stdout for the given
-# CLI arguments.
+# CLI arguments, run from the current directory.
 both() {
   local expected="$1"
   shift
@@ -71,86 +75,127 @@ both_fail() {
 test_cat_matches_git() {
   local expected
   expected=$(git -C "$REPO" show "$SHA:README.md")
-  both "$expected" "$REPO" "$SHA" cat README.md
+  both "$expected" "$SHA" cat README.md
 
   expected=$(git -C "$REPO" show "$SHA:src/app/main.go")
-  both "$expected" "$REPO" "$SHA" cat src/app/main.go
+  both "$expected" "$SHA" cat src/app/main.go
+}
+
+test_cat_multiple_paths_concatenates() {
+  local expected
+  expected=$(git -C "$REPO" show "$SHA:README.md"; git -C "$REPO" show "$SHA:docs/index.md")
+  both "$expected" "$SHA" cat README.md docs/index.md
 }
 
 test_cat_symlink_returns_target() {
-  both "README.md" "$REPO" "$SHA" cat link
+  both "README.md" "$SHA" cat link
 }
 
-test_ls_root_matches_git() {
+test_ls_root_default_is_plain_names() {
   local expected
   expected=$(git -C "$REPO" ls-tree --name-only "$SHA" | LC_ALL=C sort)
-  assert_eq "$expected" "$("$GITFS_BIN" "$REPO" "$SHA" ls | cut -f3-)"
-  assert_eq "$expected" "$("$GITFS_BIN" -git-binary "$GIT_BIN" "$REPO" "$SHA" ls | cut -f3-)"
+  both "$expected" "$SHA" ls
+}
+
+test_ls_long_matches_git() {
+  local expected
+  expected=$(git -C "$REPO" ls-tree --name-only "$SHA" | LC_ALL=C sort)
+  assert_eq "$expected" "$("$GITFS_BIN" "$SHA" ls -l | cut -f3-)"
+  assert_eq "$expected" "$("$GITFS_BIN" -git-binary "$GIT_BIN" "$SHA" ls -l | cut -f3-)"
 }
 
 test_ls_subdirectory() {
-  both "drwxr-xr-x${TAB}0${TAB}app" "$REPO" "$SHA" ls src
+  both "app" "$SHA" ls src
+  both "drwxr-xr-x${TAB}0${TAB}app" "$SHA" ls -l src
 }
 
-test_stat_modes_and_sizes() {
-  local size
-  size=$(git -C "$REPO" cat-file -s "$SHA:run.sh")
-  both "-rwxr-xr-x${TAB}${size}${TAB}run.sh" "$REPO" "$SHA" stat run.sh
-
-  size=$(git -C "$REPO" cat-file -s "$SHA:README.md")
-  both "-rw-r--r--${TAB}${size}${TAB}README.md" "$REPO" "$SHA" stat README.md
-
-  both "Lrwxrwxrwx${TAB}9${TAB}link" "$REPO" "$SHA" stat link
-  both "drwxr-xr-x${TAB}0${TAB}src" "$REPO" "$SHA" stat src
+test_ls_multiple_paths_prints_headers() {
+  both "$(printf 'src:\napp\n\ndocs:\nindex.md')" "$SHA" ls src docs
 }
 
-test_glob() {
-  both "src/app" "$REPO" "$SHA" glob "src/*"
-  both "src/app/main.go" "$REPO" "$SHA" glob "src/*/*.go"
-  both "" "$REPO" "$SHA" glob "nomatch/*"
-}
-
-test_bare_repo() {
+test_bare_repo_discovered_from_cwd() {
   local expected
   expected=$(git -C "$REPO" show "$SHA:README.md")
-  both "$expected" "$BARE/repo.git" "$SHA" cat README.md
-  both "drwxr-xr-x${TAB}0${TAB}app" "$BARE/repo.git" "$SHA" ls src
+  (
+    cd "$BARE/repo.git"
+    assert_eq "$expected" "$("$GITFS_BIN" "$SHA" cat README.md)"
+    assert_eq "$expected" "$("$GITFS_BIN" -git-binary "$GIT_BIN" "$SHA" cat README.md)"
+    assert_eq "app" "$("$GITFS_BIN" "$SHA" ls src)"
+  )
+}
+
+test_repo_discovered_from_subdirectory() {
+  (
+    cd "$REPO/src/app"
+    assert_eq "package main" "$("$GITFS_BIN" "$SHA" cat main.go)"
+  )
 }
 
 test_sparse() {
   # Root listing is limited to the ancestors of the sparse paths.
-  both "drwxr-xr-x${TAB}0${TAB}src" -sparse src/app "$REPO" "$SHA" ls
-  both "drwxr-xr-x${TAB}0${TAB}app" -sparse src/app "$REPO" "$SHA" ls src
+  both "src" -sparse src/app "$SHA" ls
+  both "app" -sparse src/app "$SHA" ls src
 
   # Inside the sparse set: readable.
-  both "package main" -sparse src/app "$REPO" "$SHA" cat src/app/main.go
-  both "src/app/main.go" -sparse src/app "$REPO" "$SHA" glob "src/*/*.go"
+  both "package main" -sparse src/app "$SHA" cat src/app/main.go
 
   # Outside the sparse set: indistinguishable from absent.
-  both_fail -sparse src/app "$REPO" "$SHA" cat README.md
-  both_fail -sparse src/app "$REPO" "$SHA" stat README.md
-  both_fail -sparse src/app "$REPO" "$SHA" ls docs
+  both_fail -sparse src/app "$SHA" cat README.md
+  both_fail -sparse src/app "$SHA" ls docs
 }
 
-test_rejects_non_commit_sha() {
-  both_fail "$REPO" main cat README.md          # branch name
-  both_fail "$REPO" "${SHA:0:10}" cat README.md # short SHA
-  both_fail "$REPO" 0000000000000000000000000000000000000000 cat README.md
+test_resolves_branch_name() {
+  local expected
+  expected=$(git -C "$REPO" show "$SHA:README.md")
+  both "$expected" main cat README.md
+}
+
+test_resolves_tag() {
+  local expected
+  expected=$(git -C "$REPO" show "$SHA:README.md")
+  both "$expected" v1 cat README.md
+}
+
+test_resolves_head() {
+  local expected
+  expected=$(git -C "$REPO" show "$SHA:README.md")
+  both "$expected" HEAD cat README.md
+}
+
+test_resolves_short_sha() {
+  local expected
+  expected=$(git -C "$REPO" show "$SHA:README.md")
+  both "$expected" "${SHA:0:10}" cat README.md
+}
+
+test_rejects_unresolvable_ref() {
+  both_fail no-such-ref cat README.md
 
   local err
-  err=$("$GITFS_BIN" "$REPO" main cat README.md 2>&1 || true)
-  assert_contains "$err" "not a full commit SHA"
+  err=$("$GITFS_BIN" no-such-ref cat README.md 2>&1 || true)
+  assert_contains "$err" "cannot resolve"
+}
+
+test_rejects_unresolvable_full_sha() {
+  both_fail 0000000000000000000000000000000000000000 cat README.md
 }
 
 test_rejects_non_repo() {
   local outside
   outside=$(mktemp -d)
-  both_fail "$outside" "$SHA" cat README.md
+  (
+    cd "$outside"
+    if "$GITFS_BIN" "$SHA" cat README.md >/dev/null 2>&1; then
+      fail "expected failure outside a git repository"
+    else
+      pass
+    fi
+  )
   rm -rf "$outside"
 }
 
 test_missing_git_binary_fails() {
-  if "$GITFS_BIN" -git-binary /nonexistent/git "$REPO" "$SHA" cat README.md >/dev/null 2>&1; then
+  if "$GITFS_BIN" -git-binary /nonexistent/git "$SHA" cat README.md >/dev/null 2>&1; then
     fail "expected failure with a missing git binary"
   else
     pass
@@ -158,9 +203,8 @@ test_missing_git_binary_fails() {
 }
 
 test_missing_path_fails() {
-  both_fail "$REPO" "$SHA" cat nope.txt
-  both_fail "$REPO" "$SHA" stat nope.txt
-  both_fail "$REPO" "$SHA" ls nope
+  both_fail "$SHA" cat nope.txt
+  both_fail "$SHA" ls nope
 }
 
 # -- run ----------------------------------------------------------------------
