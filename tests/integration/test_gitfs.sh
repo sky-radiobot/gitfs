@@ -15,6 +15,7 @@ TAB=$'\t'
 REPO=""
 BARE=""
 SHA=""
+DATE=""
 ORIG_PWD="$PWD"
 
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
@@ -35,6 +36,7 @@ setup() {
   git -C "$REPO" add -A
   git -C "$REPO" commit --quiet -m initial
   SHA=$(git -C "$REPO" rev-parse HEAD)
+  DATE=$(git -C "$REPO" show -s --format=%cd --date=short "$SHA")
   git -C "$REPO" tag v1
   BARE=$(mktemp -d)
   git clone --quiet --bare "$REPO" "$BARE/repo.git"
@@ -103,13 +105,20 @@ test_ls_root_default_is_plain_names() {
 test_ls_long_matches_git() {
   local expected
   expected=$(git -C "$REPO" ls-tree --name-only "$SHA" | LC_ALL=C sort)
-  assert_eq "$expected" "$("$GITFS_BIN" ls "$SHA" -l | cut -f3-)"
-  assert_eq "$expected" "$(GIT_BINARY="$GIT_BIN" "$GITFS_BIN" ls "$SHA" -l | cut -f3-)"
+  assert_eq "$expected" "$("$GITFS_BIN" ls "$SHA" -l | cut -f4-)"
+  assert_eq "$expected" "$(GIT_BINARY="$GIT_BIN" "$GITFS_BIN" ls "$SHA" -l | cut -f4-)"
+}
+
+test_ls_long_shows_ref_date() {
+  local out size
+  size=$(git -C "$REPO" cat-file -s "$SHA:README.md")
+  out=$("$GITFS_BIN" ls "$SHA" -l README.md)
+  assert_eq "-rw-r--r--${TAB}${size}${TAB}${DATE}${TAB}README.md" "$out"
 }
 
 test_ls_subdirectory() {
   both "app" ls "$SHA" src
-  both "drwxr-xr-x${TAB}0${TAB}app" ls "$SHA" -l src
+  both "drwxr-xr-x${TAB}0${TAB}${DATE}${TAB}app" ls "$SHA" -l src
 }
 
 test_ls_multiple_paths_prints_headers() {
@@ -154,6 +163,52 @@ test_repo_discovered_from_subdirectory() {
     cd "$REPO/src/app"
     assert_eq "package main" "$("$GITFS_BIN" cat "$SHA" main.go)"
   )
+}
+
+test_ls_blame_finds_last_touching_commit() {
+  echo "updated" >>"$REPO/README.md"
+  git -C "$REPO" add -A
+  git -C "$REPO" commit --quiet -m second
+  local sha2
+  sha2=$(git -C "$REPO" rev-parse HEAD)
+
+  # README.md was touched by sha2; docs/index.md was last touched by the
+  # original $SHA and never touched again.
+  assert_contains "$("$GITFS_BIN" ls --blame "$sha2" README.md)" "${sha2:0:7}"
+  assert_contains "$("$GITFS_BIN" ls --blame "$sha2" docs/index.md)" "${SHA:0:7}"
+}
+
+test_ls_blame_limit_falls_back_to_ref_commit() {
+  echo "updated" >>"$REPO/README.md"
+  git -C "$REPO" add -A
+  git -C "$REPO" commit --quiet -m second
+  local sha2
+  sha2=$(git -C "$REPO" rev-parse HEAD)
+
+  # docs/index.md was last touched by the *first* commit, one commit back
+  # from sha2; a 0-commit search window can't reach it, so this must fall
+  # back to sha2's own commit rather than error or report something newer.
+  assert_contains "$("$GITFS_BIN" ls --blame=0 "$sha2" docs/index.md)" "${sha2:0:7}"
+}
+
+test_ls_blame_implies_long_format() {
+  local out fields
+  out=$("$GITFS_BIN" ls --blame "$SHA" README.md)
+  fields=$(awk -F'\t' '{print NF}' <<<"$out")
+  assert_eq "6" "$fields" "expected mode/size/date/author/commit/name: $out"
+}
+
+test_ls_blame_rejects_invalid_limit() {
+  if "$GITFS_BIN" ls --blame=abc "$SHA" README.md >/dev/null 2>&1; then
+    fail "expected failure for non-numeric --blame limit"
+  else
+    pass
+  fi
+  if "$GITFS_BIN" ls --blame=-1 "$SHA" README.md >/dev/null 2>&1; then
+    fail "expected failure for negative --blame limit"
+  else
+    pass
+  fi
 }
 
 test_sparse() {
