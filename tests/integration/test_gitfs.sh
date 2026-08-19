@@ -36,7 +36,7 @@ setup() {
   git -C "$REPO" add -A
   git -C "$REPO" commit --quiet -m initial
   SHA=$(git -C "$REPO" rev-parse HEAD)
-  DATE=$(git -C "$REPO" show -s --format=%cd --date=short "$SHA")
+  DATE=$(git -C "$REPO" show -s --format=%cd --date='format:%b %e %H:%M' "$SHA")
   git -C "$REPO" tag v1
   BARE=$(mktemp -d)
   git clone --quiet --bare "$REPO" "$BARE/repo.git"

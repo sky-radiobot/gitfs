@@ -12,6 +12,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -161,6 +162,19 @@ func catCommand(sparse *string) *cobra.Command {
 // the ancestor-commit search is unbounded.
 const unboundedBlame = -1
 
+// lsDate formats t the way plain `ls -l` does: "Aug 19 22:03" for
+// timestamps within the last ~6 months, or "Oct 18  2024" (year instead of
+// time, note the extra space keeping columns aligned) for anything older,
+// or in the future.
+func lsDate(t time.Time) string {
+	const sixMonths = 6 * 30 * 24 * time.Hour
+	now := time.Now()
+	if t.After(now.Add(-sixMonths)) && !t.After(now) {
+		return t.Format("Jan _2 15:04")
+	}
+	return t.Format("Jan _2  2006")
+}
+
 func lsCommand(sparse *string) *cobra.Command {
 	var long bool
 	var blameLimitFlag string
@@ -222,7 +236,7 @@ func lsCommand(sparse *string) *cobra.Command {
 				case !long:
 					fmt.Println(displayName)
 				case !blame:
-					fmt.Printf("%s\t%d\t%s\t%s\n", info.Mode(), info.Size(), info.ModTime().Format("2006-01-02"), displayName)
+					fmt.Printf("%s\t%d\t%s\t%s\n", info.Mode(), info.Size(), lsDate(info.ModTime()), displayName)
 				default:
 					es, _ := info.Sys().(*gitfs.ExtendedStat)
 					if es == nil {
@@ -231,7 +245,7 @@ func lsCommand(sparse *string) *cobra.Command {
 					if es.Err != nil {
 						return es.Err
 					}
-					fmt.Printf("%s\t%s\t%d\t%s\t%s\t%s\n", info.Mode(), es.AuthorEmail, info.Size(), es.Date.Format("2006-01-02"), shortSHA(es.Commit), displayName)
+					fmt.Printf("%s\t%s\t%d\t%s\t%s\t%s\n", info.Mode(), es.AuthorEmail, info.Size(), lsDate(es.Date), shortSHA(es.Commit), displayName)
 				}
 				return nil
 			}

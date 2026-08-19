@@ -83,7 +83,9 @@ $ gitfs cat main README.md
 
 `ls` defaults to plain names, one per line; `-l` switches to
 `mode\tsize\tdate\tname` (date is REF's commit date, the same for every
-row). Both subcommands accept multiple paths, and any of them may be a
+row, formatted like plain `ls -l` — `Aug 19 22:03`, or `Oct 18  2024` for
+anything more than ~6 months old or in the future). Both subcommands
+accept multiple paths, and any of them may be a
 `path.Match`-style glob (e.g. `gitfs ls main 'sc*'`) — matched against the
 tree at REF, not your local filesystem, so the glob typically needs to be
 quoted/escaped (`'sc*'`, not `sc*`) to stop your shell from expanding it
