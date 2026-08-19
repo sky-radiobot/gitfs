@@ -50,8 +50,8 @@ Two functional options tune how a `GitFS` reads:
 `cmd/gitfs` builds a small `gitfs` command-line tool around the library:
 
 ```sh
-gitfs REF cat PATH [PATH...]
-gitfs REF ls [-l] [PATH...]
+gitfs cat REF PATH [PATH...]
+gitfs ls REF [-l] [PATH...]
 ```
 
 `REF` is a full commit SHA, or anything the `git` CLI can resolve to one —
@@ -64,27 +64,26 @@ arguments are resolved relative to the current directory, just like plain
 
 ```sh
 $ cd myrepo
-$ gitfs HEAD~2 ls src
+$ gitfs ls HEAD~2 src
 main.go
 util.go
 
-$ gitfs main cat README.md
+$ gitfs cat main README.md
 ...
 ```
 
 `ls` defaults to plain names, one per line; `-l` switches to
 `mode\tsize\tname`. Both subcommands accept multiple paths.
 
-Flags (must precede `REF`):
-
-- `--git-binary PATH` — use the shell-out backend instead of go-git.
 - `--sparse p1,p2` — restrict the filesystem to the given repo-relative
   subtrees.
+- `GIT_BINARY=path` — use the shell-out backend at `path` instead of
+  go-git (also used for the CLI's own ref resolution and repo discovery,
+  regardless of backend).
 
-Built on [cobra](https://github.com/spf13/cobra): `--git-binary`/`--sparse`
-are parsed ahead of `REF` by a plain `pflag.FlagSet`, and the remaining
-`cat`/`ls [ARGS]` are dispatched as cobra subcommands (so e.g. `ls --help`
-works).
+Built on [cobra](https://github.com/spf13/cobra): `cat`/`ls` are ordinary
+cobra subcommands with `REF` as their first positional argument, so e.g.
+`gitfs cat --help` works and documents `REF` correctly.
 
 ## Development
 

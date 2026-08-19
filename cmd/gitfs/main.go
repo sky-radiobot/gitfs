@@ -13,18 +13,9 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 
 	"gitfs"
 )
-
-func usage() {
-	fmt.Fprintln(os.Stderr, "usage: gitfs [--git-binary PATH] [--sparse p1,p2] REF cat|ls [ARGS]")
-	fmt.Fprintln(os.Stderr, "REF is a full commit SHA or anything the git CLI can resolve to one")
-	fmt.Fprintln(os.Stderr, "(branch, tag, short SHA, HEAD, ...). The repository is discovered")
-	fmt.Fprintln(os.Stderr, "from the current directory, the same way git itself does.")
-	os.Exit(2)
-}
 
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, "gitfs:", err)
@@ -32,82 +23,38 @@ func fatal(err error) {
 }
 
 func main() {
-	// Global flags must precede REF; SetInterspersed(false) stops parsing at
-	// the first positional argument so the remainder (REF, op, and the op's
-	// own flags such as ls's -l) is left untouched for the cobra dispatch
-	// below, rather than being rejected as unknown flags of this flag set.
-	globalFlags := pflag.NewFlagSet("gitfs", pflag.ContinueOnError)
-	globalFlags.SetInterspersed(false)
-	gitBinaryFlag := globalFlags.String("git-binary", "", "shell out to the git binary at PATH instead of using go-git")
-	sparse := globalFlags.String("sparse", "", "comma-separated repo-relative paths to restrict the filesystem to")
-	globalFlags.Usage = usage
-	if err := globalFlags.Parse(os.Args[1:]); err != nil {
-		usage()
-	}
+	var sparse string
 
-	args := globalFlags.Args()
-	if len(args) < 2 {
-		usage()
+	root := &cobra.Command{
+		Use:   "gitfs",
+		Short: "Read a git commit's tree without checking it out",
+		Long: "REF is a full commit SHA or anything the git CLI can resolve to one\n" +
+			"(branch, tag, short SHA, HEAD, ...). The repository is discovered\n" +
+			"from the current directory, the same way git itself does.\n\n" +
+			"Set GIT_BINARY to shell out to a specific git binary instead of using\n" +
+			"the built-in go-git backend.",
+		SilenceUsage:  true,
+		SilenceErrors: true,
 	}
-	ref, opArgs := args[0], args[1:]
+	root.PersistentFlags().StringVar(&sparse, "sparse", "", "comma-separated repo-relative paths to restrict the filesystem to")
+	root.AddCommand(catCommand(&sparse), lsCommand(&sparse))
 
-	if err := run(*gitBinaryFlag, *sparse, ref, opArgs); err != nil {
+	if err := root.Execute(); err != nil {
 		fatal(err)
 	}
 }
 
-// run resolves ref against the repository discovered from the current
-// directory, opens the pinned GitFS, and dispatches op (with its own args)
-// to the cat/ls subcommands.
-func run(gitBinaryFlag, sparse, ref string, opArgs []string) error {
-	gitBin := gitBinaryFlag
-	if gitBin == "" {
-		gitBin = "git"
-	}
-
-	repoPath, bare, err := discoverRepo(gitBin)
-	if err != nil {
-		return err
-	}
-	sha, err := resolveSHA(gitBin, repoPath, ref)
-	if err != nil {
-		return err
-	}
-	prefix, err := repoPrefix(gitBin, bare)
-	if err != nil {
-		return err
-	}
-
-	var opts []gitfs.Option
-	if gitBinaryFlag != "" {
-		opts = append(opts, gitfs.WithGitBinary(gitBinaryFlag))
-	}
-	if sparse != "" {
-		opts = append(opts, gitfs.WithSparse(strings.Split(sparse, ",")...))
-	}
-
-	fsys, err := gitfs.Open(repoPath, sha, opts...)
-	if err != nil {
-		return err
-	}
-
-	sub := &cobra.Command{
-		Use:           "gitfs",
-		SilenceUsage:  true,
-		SilenceErrors: true,
-	}
-	sub.AddCommand(catCommand(fsys, prefix), lsCommand(fsys, prefix))
-	sub.SetArgs(opArgs)
-	return sub.Execute()
-}
-
-func catCommand(fsys *gitfs.GitFS, prefix string) *cobra.Command {
+func catCommand(sparse *string) *cobra.Command {
 	return &cobra.Command{
-		Use:   "cat PATH [PATH...]",
-		Short: "print the content of one or more files",
-		Args:  cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, paths []string) error {
-			for _, p := range paths {
+		Use:   "cat REF PATH [PATH...]",
+		Short: "print the content of one or more files at REF",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fsys, prefix, err := openFS(args[0], *sparse)
+			if err != nil {
+				return err
+			}
+			for _, p := range args[1:] {
 				data, err := fsys.ReadFile(path.Join(prefix, p))
 				if err != nil {
 					return err
@@ -121,12 +68,18 @@ func catCommand(fsys *gitfs.GitFS, prefix string) *cobra.Command {
 	}
 }
 
-func lsCommand(fsys *gitfs.GitFS, prefix string) *cobra.Command {
+func lsCommand(sparse *string) *cobra.Command {
 	var long bool
 	cmd := &cobra.Command{
-		Use:   "ls [PATH...]",
-		Short: "list directory entries",
-		RunE: func(cmd *cobra.Command, paths []string) error {
+		Use:   "ls REF [PATH...]",
+		Short: "list directory entries at REF",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fsys, prefix, err := openFS(args[0], *sparse)
+			if err != nil {
+				return err
+			}
+			paths := args[1:]
 			if len(paths) == 0 {
 				paths = []string{"."}
 			}
@@ -163,6 +116,47 @@ func lsCommand(fsys *gitfs.GitFS, prefix string) *cobra.Command {
 // printInfo prints "<mode>\t<size>\t<name>".
 func printInfo(fi fs.FileInfo) {
 	fmt.Printf("%s\t%d\t%s\n", fi.Mode(), fi.Size(), fi.Name())
+}
+
+// openFS resolves ref against the repository discovered from the current
+// directory and opens the pinned GitFS, returning it along with the
+// repo-root-relative prefix for the current directory (see repoPrefix).
+// GIT_BINARY, if set, selects the shell-out backend; otherwise gitfs reads
+// via the pure-Go go-git backend, though GIT_BINARY (or "git" on PATH) is
+// still used for the CLI's own ref resolution and repo discovery.
+func openFS(ref, sparse string) (*gitfs.GitFS, string, error) {
+	gitBinaryEnv := os.Getenv("GIT_BINARY")
+	gitBin := gitBinaryEnv
+	if gitBin == "" {
+		gitBin = "git"
+	}
+
+	repoPath, bare, err := discoverRepo(gitBin)
+	if err != nil {
+		return nil, "", err
+	}
+	sha, err := resolveSHA(gitBin, repoPath, ref)
+	if err != nil {
+		return nil, "", err
+	}
+	prefix, err := repoPrefix(gitBin, bare)
+	if err != nil {
+		return nil, "", err
+	}
+
+	var opts []gitfs.Option
+	if gitBinaryEnv != "" {
+		opts = append(opts, gitfs.WithGitBinary(gitBinaryEnv))
+	}
+	if sparse != "" {
+		opts = append(opts, gitfs.WithSparse(strings.Split(sparse, ",")...))
+	}
+
+	fsys, err := gitfs.Open(repoPath, sha, opts...)
+	if err != nil {
+		return nil, "", err
+	}
+	return fsys, prefix, nil
 }
 
 // discoverRepo locates the repository containing the current directory, the
