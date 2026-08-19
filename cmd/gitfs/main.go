@@ -17,8 +17,9 @@ import (
 	"gitfs"
 )
 
-func fatal(err error) {
-	fmt.Fprintln(os.Stderr, "gitfs:", err)
+func fatal(cmd *cobra.Command, err error) {
+	fmt.Fprintln(os.Stderr, err)
+	fmt.Fprintf(os.Stderr, "run %q for more information\n", cmd.CommandPath()+" --help")
 	os.Exit(1)
 }
 
@@ -105,15 +106,31 @@ func main() {
 	}
 	root.AddCommand(catCmd, lsCmd)
 
-	if err := root.Execute(); err != nil {
-		fatal(err)
+	root.InitDefaultCompletionCmd()
+	if completionCmd, _, err := root.Find([]string{"completion"}); err == nil {
+		completionCmd.Long += "\nQuick start for bash, via the bash-completion package:\n\n" +
+			"\tmkdir -p ~/.local/share/bash-completion/completions\n" +
+			"\tgitfs completion bash > ~/.local/share/bash-completion/completions/gitfs\n"
+	}
+
+	executedCmd, err := root.ExecuteC()
+	if err != nil {
+		fatal(executedCmd, err)
 	}
 }
+
+// refHelp explains REF and GIT_BINARY, shared by cat's and ls's Long help.
+const refHelp = "REF is a full commit SHA or anything the git CLI can resolve to one\n" +
+	"(branch, tag, short SHA, HEAD, ...). The repository is discovered\n" +
+	"from the current directory, the same way git itself does.\n\n" +
+	"Set GIT_BINARY to shell out to a specific git binary instead of using\n" +
+	"the built-in go-git backend."
 
 func catCommand(sparse *string) *cobra.Command {
 	return &cobra.Command{
 		Use:               "cat REF PATH [PATH...]",
 		Short:             "print the content of one or more files at REF",
+		Long:              "print the content of one or more files at REF\n\n" + refHelp,
 		Args:              cobra.MinimumNArgs(2),
 		ValidArgsFunction: completeRef,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -140,6 +157,7 @@ func lsCommand(sparse *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "ls REF [PATH...]",
 		Short:             "list directory entries at REF",
+		Long:              "list directory entries at REF\n\n" + refHelp,
 		Args:              cobra.MinimumNArgs(1),
 		ValidArgsFunction: completeRef,
 		RunE: func(cmd *cobra.Command, args []string) error {
