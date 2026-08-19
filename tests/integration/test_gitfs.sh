@@ -116,6 +116,28 @@ test_ls_multiple_paths_prints_headers() {
   both "$(printf 'src:\napp\n\ndocs:\nindex.md')" ls "$SHA" src docs
 }
 
+test_ls_glob_matches_directory() {
+  both "index.md" ls "$SHA" 'd*'
+}
+
+test_ls_glob_matches_file() {
+  both "README.md" ls "$SHA" 'REA*'
+}
+
+test_ls_glob_mixed_with_literal_path_prints_headers() {
+  both "$(printf 'docs:\nindex.md\n\nsrc:\napp')" ls "$SHA" 'd*' src
+}
+
+test_ls_glob_no_match_fails() {
+  both_fail ls "$SHA" 'zzz*'
+}
+
+test_cat_glob_matches_file() {
+  local expected
+  expected=$(git -C "$REPO" show "$SHA:README.md")
+  both "$expected" cat "$SHA" 'REA*'
+}
+
 test_bare_repo_discovered_from_cwd() {
   local expected
   expected=$(git -C "$REPO" show "$SHA:README.md")

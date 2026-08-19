@@ -138,8 +138,12 @@ func catCommand(sparse *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			for _, p := range args[1:] {
-				data, err := fsys.ReadFile(path.Join(prefix, p))
+			targets, err := expandGlobs(fsys, prefix, args[1:])
+			if err != nil {
+				return err
+			}
+			for _, t := range targets {
+				data, err := fsys.ReadFile(t)
 				if err != nil {
 					return err
 				}
@@ -169,34 +173,97 @@ func lsCommand(sparse *string) *cobra.Command {
 			if len(paths) == 0 {
 				paths = []string{"."}
 			}
-			for i, p := range paths {
-				entries, err := fsys.ReadDir(path.Join(prefix, p))
+			targets, err := expandGlobs(fsys, prefix, paths)
+			if err != nil {
+				return err
+			}
+
+			printedAny := false
+			printHeader := func(name string) {
+				if len(targets) > 1 {
+					if printedAny {
+						fmt.Println()
+					}
+					fmt.Printf("%s:\n", name)
+				}
+			}
+			printEntry := func(name string, info fs.FileInfo) {
+				if long {
+					printInfo(info)
+				} else {
+					fmt.Println(name)
+				}
+			}
+
+			for _, t := range targets {
+				info, err := fsys.Stat(t)
 				if err != nil {
 					return err
 				}
-				if len(paths) > 1 {
-					if i > 0 {
-						fmt.Println()
-					}
-					fmt.Printf("%s:\n", p)
+				if !info.IsDir() {
+					printEntry(displayPath(prefix, t), info)
+					printedAny = true
+					continue
 				}
+				entries, err := fsys.ReadDir(t)
+				if err != nil {
+					return err
+				}
+				printHeader(displayPath(prefix, t))
 				for _, e := range entries {
-					if long {
-						info, err := e.Info()
-						if err != nil {
-							return err
-						}
-						printInfo(info)
-					} else {
-						fmt.Println(e.Name())
+					entryInfo, err := e.Info()
+					if err != nil {
+						return err
 					}
+					printEntry(e.Name(), entryInfo)
 				}
+				printedAny = true
 			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVarP(&long, "long", "l", false, "long format: mode, size, name")
 	return cmd
+}
+
+// expandGlobs resolves each of paths (repo-root-relative once joined with
+// prefix) via fs.Glob, so path.Match-style patterns like "sc*" work
+// alongside plain literal paths; Glob treats a pattern with no metachars as
+// a plain existence check, so this is backward compatible with exact
+// paths. Each pattern must match at least one entry.
+func expandGlobs(fsys *gitfs.GitFS, prefix string, paths []string) ([]string, error) {
+	var targets []string
+	for _, p := range paths {
+		matches, err := fsys.Glob(path.Join(prefix, p))
+		if err != nil {
+			return nil, err
+		}
+		if len(matches) == 0 {
+			return nil, &fs.PathError{Op: "glob", Path: p, Err: fs.ErrNotExist}
+		}
+		targets = append(targets, matches...)
+	}
+	return targets, nil
+}
+
+// displayPath renders a repo-root-relative path back into cwd-relative
+// form (undoing the path.Join(prefix, ...) expandGlobs did), so ls's
+// headers and single-file names match what the user typed rather than the
+// full repo-relative path glob matches resolve to. Falls back to the
+// repo-relative form for matches outside prefix's subtree (e.g. a ".."
+// pattern), since there's no shorter cwd-relative spelling for those.
+func displayPath(prefix, repoRelative string) string {
+	switch {
+	case prefix == "":
+		return repoRelative
+	case repoRelative == prefix:
+		return "."
+	default:
+		if rest, ok := strings.CutPrefix(repoRelative, prefix+"/"); ok {
+			return rest
+		}
+		return repoRelative
+	}
 }
 
 // printInfo prints "<mode>\t<size>\t<name>".

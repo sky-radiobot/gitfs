@@ -73,7 +73,8 @@ $ gitfs cat main README.md
 ```
 
 `ls` defaults to plain names, one per line; `-l` switches to
-`mode\tsize\tname`. Both subcommands accept multiple paths.
+`mode\tsize\tname`. Both subcommands accept multiple paths, and any of
+them may be a `path.Match`-style glob (e.g. `gitfs ls main 'sc*'`).
 
 - `--sparse p1,p2` — restrict the filesystem to the given repo-relative
   subtrees.
