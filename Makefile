@@ -1,4 +1,4 @@
-.PHONY: all build test unit-tests integration-tests vet sync-submodules clean help
+.PHONY: all build install test unit-tests integration-tests vet sync-submodules clean help
 
 # Make sure submodules (simple-go) are checked out before anything else,
 # so a fresh clone without --recurse-submodules still builds.
@@ -8,6 +8,9 @@ all: build
 
 build: sync-submodules ## Build all packages
 	go build ./...
+
+install: sync-submodules ## Install the gitfs CLI to GOBIN/GOPATH/bin
+	go install ./cmd/gitfs
 
 sync-submodules: ## Init/update git submodules and push back any local changes made to them
 	./scripts/sync-submodules

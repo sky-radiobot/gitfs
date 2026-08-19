@@ -84,6 +84,7 @@ Flags (must precede `REF`):
 ## Development
 
 - `make build` — build all packages
+- `make install` — install the `gitfs` CLI to `GOBIN`/`GOPATH/bin`
 - `make unit-tests` — Go unit tests
 - `make integration-tests` — bash integration tests against the compiled
   CLI, cross-checked against the real `git` CLI, on both backends
