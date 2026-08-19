@@ -243,14 +243,14 @@ func completeRef(cmd *cobra.Command, args []string, toComplete string) ([]string
 }
 
 // completeSHAPrefix suggests full commit SHAs matching a hex prefix of at
-// least 4 digits (git's traditional minimum abbreviation length), using
-// git's own indexed object lookup (rev-parse --disambiguate) rather than a
-// linear history scan: loose objects are bucketed into 256 directories by
-// their first byte, and packed objects are found via a sorted,
-// binary-searchable index, so this stays fast (single-digit milliseconds,
-// measured) regardless of repo history size. Below 4 digits the prefix
-// isn't distinctive enough to be worth the (still cheap, but needlessly
-// broad) match set, so it's skipped.
+// least 4 digits, using git's own indexed object lookup
+// (rev-parse --disambiguate) rather than a linear history scan: loose
+// objects are bucketed into 256 directories by their first byte, and
+// packed objects are found via a sorted, binary-searchable index, so this
+// stays fast (single-digit milliseconds, measured) regardless of repo
+// history size. 4 is a hard floor, not just a tuning choice: git's own
+// --disambiguate silently returns nothing below 4 hex digits (verified),
+// so there is no efficient path below that.
 func completeSHAPrefix(gitBin, repoPath, prefix string) []string {
 	if len(prefix) < 4 || !looksLikeHexPrefix(prefix) {
 		return nil

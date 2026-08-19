@@ -88,10 +88,12 @@ cobra subcommands with `REF` as their first positional argument, so e.g.
 Shell completion (`gitfs completion bash|zsh|fish|powershell`) completes
 subcommands out of the box, and `REF` against local branches, tags,
 remote-tracking refs, and `HEAD` — e.g. `gitfs cat ma<TAB>` completes to
-`main`. Typing 4+ hex digits (e.g. `91<TAB>` → nothing, `9195<TAB>` → the
+`main`. Typing 4+ hex digits (e.g. `919<TAB>` → nothing, `9195<TAB>` → the
 full SHA) also completes commit-SHA prefixes, via git's own indexed object
 lookup rather than a history scan, so it stays fast regardless of repo
-size. `PATH` arguments fall back to the shell's normal file completion.
+size — 4 is a hard floor of git's own lookup (`rev-parse --disambiguate`
+silently returns nothing below that), not just a tuning choice.
+`PATH` arguments fall back to the shell's normal file completion.
 
 ## Development
 
