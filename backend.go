@@ -1,7 +1,9 @@
 package gitfs
 
 import (
+	"fmt"
 	"io/fs"
+	"strings"
 	"time"
 )
 
@@ -48,6 +50,51 @@ type commitInfo struct {
 	author string
 	email  string
 	date   time.Time
+}
+
+// logOneCommit runs `git log --max-count=1` over revOrRange (optionally
+// filtered to path; path == "" means no pathspec) via run, and parses the
+// result. Shared by execBackend.lastCommit and gogitBackend's
+// WithBlameFallback path, since only how git gets invoked differs between
+// them (--git-dir=X vs -C repoPath), not what's asked of it or how the
+// answer is parsed. ok is false, not an error, when nothing matches.
+func logOneCommit(run func(args ...string) ([]byte, error), revOrRange, path string) (ci commitInfo, ok bool, err error) {
+	args := []string{"log", "--max-count=1", "--format=%H%x09%aI%x09%an%x09%ae", revOrRange}
+	if path != "" {
+		args = append(args, "--", path)
+	}
+	out, err := run(args...)
+	if err != nil {
+		return commitInfo{}, false, err
+	}
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		return commitInfo{}, false, nil
+	}
+	fields := strings.Split(line, "\t")
+	if len(fields) != 4 {
+		return commitInfo{}, false, fmt.Errorf("gitfs: unexpected git log output: %q", line)
+	}
+	date, err := time.Parse(time.RFC3339, fields[1])
+	if err != nil {
+		return commitInfo{}, false, err
+	}
+	return commitInfo{sha: fields[0], date: date, author: fields[2], email: fields[3]}, true, nil
+}
+
+// mustLogOneCommit is logOneCommit without a pathspec, for the case where
+// rev is known to resolve to a commit (it always should: it's either the
+// pinned commit itself, or one already found by an earlier logOneCommit
+// call), so "no match" is treated as an error rather than ok=false.
+func mustLogOneCommit(run func(args ...string) ([]byte, error), rev string) (commitInfo, error) {
+	ci, ok, err := logOneCommit(run, rev, "")
+	if err != nil {
+		return commitInfo{}, err
+	}
+	if !ok {
+		return commitInfo{}, fmt.Errorf("gitfs: no commit found for %s", rev)
+	}
+	return ci, nil
 }
 
 // modeFromGit maps a git tree entry mode to fs.FileMode.

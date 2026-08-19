@@ -2,6 +2,7 @@ package gitfs
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -309,6 +310,66 @@ func buildHistoryFixture(t *testing.T) (repo, sha1, sha2 string) {
 	return repo, sha1, sha2
 }
 
+// buildDeepHistoryFixture creates a git repo where deep.txt is added in
+// the first commit and never touched again, followed by noiseCommits
+// more commits each touching only noise.txt — so deep.txt's true
+// last-touching commit sits noiseCommits back from HEAD. Used to exceed
+// blameFallbackThreshold (150) with a real, if synthetic, history.
+func buildDeepHistoryFixture(t *testing.T, noiseCommits int) (repo, deepSHA, headSHA string) {
+	t.Helper()
+	repo = t.TempDir()
+	gitIn(t, repo, "init", "--quiet", "--initial-branch=main")
+
+	if err := os.WriteFile(filepath.Join(repo, "deep.txt"), []byte("deep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", "-A")
+	gitIn(t, repo, "commit", "--quiet", "-m", "add deep.txt")
+	deepSHA = gitIn(t, repo, "rev-parse", "HEAD")
+
+	for i := 0; i < noiseCommits; i++ {
+		content := fmt.Sprintf("noise %d\n", i)
+		if err := os.WriteFile(filepath.Join(repo, "noise.txt"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitIn(t, repo, "add", "-A")
+		gitIn(t, repo, "commit", "--quiet", "-m", fmt.Sprintf("noise %d", i))
+	}
+	headSHA = gitIn(t, repo, "rev-parse", "HEAD")
+
+	return repo, deepSHA, headSHA
+}
+
+// TestWithBlameFallbackEscalates verifies the actual probe-then-escalate
+// behavior end to end: deep.txt's true last-touching commit sits beyond
+// blameFallbackThreshold's pure-Go probe window, so an unbounded search
+// must escalate to the git binary to find it; a bogus binary surfaces as
+// an error precisely because escalation is genuinely required here (see
+// TestWithBlameFallback for the case where a valid vs. bogus binary makes
+// no difference because the probe alone already succeeds).
+func TestWithBlameFallbackEscalates(t *testing.T) {
+	repo, deepSHA, headSHA := buildDeepHistoryFixture(t, blameFallbackThreshold+10)
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git binary not found")
+	}
+
+	fsys, err := Open(repo, headSHA, WithExtendedStats(-1), WithBlameFallback(gitPath))
+	assert.NoError(t, err)
+	fi, err := fsys.Stat("deep.txt")
+	assert.NoError(t, err)
+	es := fi.Sys().(*ExtendedStat)
+	assert.NoError(t, es.Err)
+	assert.Equals(t, es.Commit, deepSHA)
+
+	fsys, err = Open(repo, headSHA, WithExtendedStats(-1), WithBlameFallback("/nonexistent/git"))
+	assert.NoError(t, err)
+	fi, err = fsys.Stat("deep.txt")
+	assert.NoError(t, err)
+	es = fi.Sys().(*ExtendedStat)
+	assert.Error(t, es.Err, "")
+}
+
 // TestExtendedStats exercises WithExtendedStats against both backends.
 func TestExtendedStats(t *testing.T) {
 	repo, sha1, sha2 := buildHistoryFixture(t)
@@ -382,6 +443,40 @@ func TestExtendedStatsMaxCommitsFallback(t *testing.T) {
 			assert.Equals(t, es.Commit, sha2)
 		})
 	}
+}
+
+// TestWithBlameFallback verifies the go-git backend's WithBlameFallback
+// git-binary fallback produces the same result as its pure-Go path, both
+// below and above blameFallbackThreshold (the fixture's history is far
+// shorter than the threshold either way, so this exercises the fallback
+// wiring itself, not a real deep-history crossover — see
+// gitfs_bench_test.go for that).
+func TestWithBlameFallback(t *testing.T) {
+	repo, sha1, sha2 := buildHistoryFixture(t)
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git binary not found")
+	}
+
+	// This fixture's whole history (2 commits) fits well within the
+	// pure-Go probe window, so these results come from the probe itself,
+	// not escalation — WithBlameFallback must not change correctness
+	// when it isn't actually needed. See TestWithBlameFallbackEscalates
+	// for the case where escalation is genuinely required.
+	fsys, err := Open(repo, sha2, WithExtendedStats(-1), WithBlameFallback(gitPath))
+	assert.NoError(t, err)
+
+	fi, err := fsys.Stat("touched.txt")
+	assert.NoError(t, err)
+	es := fi.Sys().(*ExtendedStat)
+	assert.NoError(t, es.Err)
+	assert.Equals(t, es.Commit, sha2)
+
+	fi, err = fsys.Stat("old.txt")
+	assert.NoError(t, err)
+	es = fi.Sys().(*ExtendedStat)
+	assert.NoError(t, es.Err)
+	assert.Equals(t, es.Commit, sha1)
 }
 
 func TestModeFromGit(t *testing.T) {

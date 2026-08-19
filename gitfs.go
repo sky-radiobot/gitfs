@@ -39,11 +39,17 @@ var (
 type Option func(*config)
 
 type config struct {
-	gitBinary     string
-	sparse        []string
-	extendedStats bool
-	maxCommits    int // max # of ancestor commits to read per entry for extended stats; negative means unbounded
+	gitBinary        string
+	sparse           []string
+	extendedStats    bool
+	maxCommits       int    // max # of ancestor commits to read per entry for extended stats; negative means unbounded
+	blameFallbackGit string // WithBlameFallback; "" means no fallback
 }
+
+// blameFallbackThreshold is the maxCommits value above which
+// WithBlameFallback's git-binary fallback kicks in (and always, when
+// maxCommits is negative/unbounded); see that option's doc comment.
+const blameFallbackThreshold = 150
 
 // WithGitBinary makes the FS read by shelling out to the git binary at
 // path. Without it, gitfs uses the pure-Go go-git library and never spawns
@@ -77,6 +83,30 @@ func WithExtendedStats(maxCommits int) Option {
 	}
 }
 
+// WithBlameFallback lets the go-git backend's WithExtendedStats lookups
+// shell out to the git binary at path, instead of always walking history
+// in pure Go, when a search would otherwise examine more than 150
+// ancestor commits (blameFallbackThreshold).
+//
+// It doesn't decide up front based on the caller's requested bound alone:
+// every lookup first probes with the cheap pure-Go walk, capped at 150
+// commits, and only pays for a git subprocess if that probe comes up
+// empty. A search that resolves within the cheap window stays on the
+// fast path even if the caller's own bound was larger or unbounded; only
+// a probe that finds nothing escalates, re-running (via git, honoring
+// the original bound) rather than continuing where the probe left off.
+//
+// Benchmarked against a real 800+ commit repo (see benchmarks/RESULTS.md):
+// go-git's pure-Go first-parent walk beats a git subprocess for
+// shallow/bounded searches, since subprocess startup dominates at that
+// scale, but a deep search flips that — git's C implementation walks
+// hundreds of commits faster than go-git's per-commit object decoding
+// can. Has no effect when WithGitBinary is also set, since that backend
+// already shells out to git for everything.
+func WithBlameFallback(path string) Option {
+	return func(c *config) { c.blameFallbackGit = path }
+}
+
 // Open opens the repository at repoPath (bare or non-bare) pinned to the
 // commit sha. sha must be a full 40-character hex commit SHA — branch names,
 // tags, and short SHAs are rejected. Open verifies that sha names a commit,
@@ -98,7 +128,7 @@ func Open(repoPath string, sha string, opts ...Option) (*GitFS, error) {
 	if cfg.gitBinary != "" {
 		be = &execBackend{binary: cfg.gitBinary}
 	} else {
-		be = &gogitBackend{}
+		be = &gogitBackend{blameGitBinary: cfg.blameFallbackGit}
 	}
 	if err := be.open(repoPath); err != nil {
 		return nil, fmt.Errorf("gitfs: cannot open repository at %s: %w", repoPath, err)
