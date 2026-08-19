@@ -94,5 +94,8 @@ cobra subcommands with `REF` as their first positional argument, so e.g.
   CLI, cross-checked against the real `git` CLI, on both backends
 - `make test` — unit + integration
 - `make vet` — `go vet ./...`
+- `scripts/develop ARGS...` — rebuild and run the CLI against whatever repo
+  you're currently in (e.g. `scripts/develop cat main README.md`), without
+  needing `make build`/`make install` first
 
 See [CLAUDE.md](CLAUDE.md) for repository layout and design conventions.

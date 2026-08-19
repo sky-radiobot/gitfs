@@ -20,11 +20,14 @@ reads, ever.
 ## Commands
 
 - `make build` — build all packages
+- `make install` — install the `gitfs` CLI to `GOBIN`/`GOPATH/bin`
 - `make unit-tests` — Go unit tests
 - `make integration-tests` — bash integration tests (builds `bin/gitfs` first)
 - `make test` — unit + integration
 - `make vet` — `go vet ./...`
 - `make sync-submodules` — init/update submodules, push back local in-submodule changes
+- `scripts/develop ARGS...` — rebuild and exec the CLI against the caller's
+  cwd (not gitfs's own repo), for quick manual testing without `make build`
 
 ## Design conventions
 

@@ -1,0 +1,18 @@
+#!/bin/bash
+set -e
+
+# Rebuild and run the gitfs CLI straight from source, so you're always
+# exercising current code without a stale bin/gitfs lying around. Doesn't
+# touch the caller's working directory: gitfs discovers its target repo
+# from cwd, so this can be invoked from inside any repo you want to debug
+# against, not just from within the gitfs checkout.
+#
+# Usage:
+#   scripts/develop ls HEAD
+#   scripts/develop cat main README.md
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN="$REPO_ROOT/bin/gitfs"
+
+(cd "$REPO_ROOT" && go build -o "$BIN" ./cmd/gitfs)
+exec "$BIN" "$@"
