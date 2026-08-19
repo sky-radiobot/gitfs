@@ -74,7 +74,10 @@ $ gitfs cat main README.md
 
 `ls` defaults to plain names, one per line; `-l` switches to
 `mode\tsize\tname`. Both subcommands accept multiple paths, and any of
-them may be a `path.Match`-style glob (e.g. `gitfs ls main 'sc*'`).
+them may be a `path.Match`-style glob (e.g. `gitfs ls main 'sc*'`) —
+matched against the tree at REF, not your local filesystem, so the glob
+typically needs to be quoted/escaped (`'sc*'`, not `sc*`) to stop your
+shell from expanding it against local files before gitfs ever sees it.
 
 - `--sparse p1,p2` — restrict the filesystem to the given repo-relative
   subtrees.
