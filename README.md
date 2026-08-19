@@ -104,6 +104,16 @@ which can be slow on a large history; `--blame=LIMIT` bounds it to `LIMIT`
 ancestor commits, falling back to REF's own commit if nothing turns up
 within that window — always at or before REF, but possibly imprecise.
 
+When `origin` is a GitHub remote and the blamed commit is reachable from
+one of its `origin/*` branches (checked locally, so only as fresh as your
+last `fetch`), the commit column is rendered as a clickable OSC 8 terminal
+hyperlink (`https://github.com/<owner>/<repo>/commit/<sha>`) with the
+short SHA as its visible text; otherwise it's a plain short SHA. Links
+only render when stdout looks like a terminal that supports them (a real
+TTY, `TERM` not `dumb`/unset); set `GITFS_FORCE_HYPERLINKS=1` to force
+them regardless — e.g. when piping through `less -R`, which preserves
+escape sequences despite output no longer being a TTY.
+
 - `--sparse p1,p2` — restrict the filesystem to the given repo-relative
   subtrees.
 - `GIT_BINARY=path` — use the shell-out backend at `path` instead of

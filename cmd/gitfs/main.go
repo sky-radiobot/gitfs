@@ -175,35 +175,82 @@ func lsDate(t time.Time) string {
 	return t.Format("Jan _2  2006")
 }
 
+// tableCell is one column's value for printTable: text is what's printed,
+// width is what's used for column alignment. These differ for values like
+// terminal hyperlinks (see hyperlink), whose printed bytes include
+// invisible escape sequences that must not count toward column width.
+type tableCell struct {
+	text  string
+	width int
+}
+
+// cell wraps a plain string as a tableCell whose alignment width is its
+// own length.
+func cell(s string) tableCell { return tableCell{text: s, width: len(s)} }
+
+// hyperlink wraps text in an OSC 8 terminal hyperlink escape sequence
+// pointing at url, so supporting terminals render it as a clickable link
+// while displaying only text. Its alignment width is text's length, not
+// the escaped string's byte length.
+func hyperlink(url, text string) tableCell {
+	return tableCell{text: "\x1b]8;;" + url + "\x1b\\" + text + "\x1b]8;;\x1b\\", width: len(text)}
+}
+
+// terminalSupportsHyperlinks reports whether stdout looks like a terminal
+// that would render OSC 8 hyperlinks usefully. Piped/redirected output
+// (not a TTY) never gets them, since the raw escape bytes would leak into
+// whatever consumes the output; TERM=dumb (or unset) doesn't either. Most
+// modern terminals either render OSC 8 as a clickable link or silently
+// ignore the unrecognized escape sequence, so this errs toward enabling
+// it rather than maintaining an exhaustive allowlist of known-good
+// terminals. GITFS_FORCE_HYPERLINKS=1 overrides all of the above, for
+// cases like piping through `less -R` (which preserves escape sequences)
+// where output genuinely isn't a TTY but should still get them.
+func terminalSupportsHyperlinks() bool {
+	if os.Getenv("GITFS_FORCE_HYPERLINKS") == "1" {
+		return true
+	}
+	info, err := os.Stdout.Stat()
+	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	term := os.Getenv("TERM")
+	return term != "" && term != "dumb"
+}
+
 // printTable prints rows as space-aligned columns (no tabs): each column
 // is padded to its max width across rows, plus one space of separation.
 // sizeCol, if >= 0, is right-aligned (like ls -l's size column); every
 // other column is left-aligned. The last column (name) is never padded,
 // since it has nothing after it to align with.
-func printTable(rows [][]string, sizeCol int) {
+func printTable(rows [][]tableCell, sizeCol int) {
 	if len(rows) == 0 {
 		return
 	}
 	numCols := len(rows[0])
 	widths := make([]int, numCols)
 	for _, r := range rows {
-		for i, f := range r {
-			if len(f) > widths[i] {
-				widths[i] = len(f)
+		for i, c := range r {
+			if c.width > widths[i] {
+				widths[i] = c.width
 			}
 		}
 	}
 	for _, r := range rows {
 		var b strings.Builder
-		for i, f := range r {
-			if i == numCols-1 {
-				b.WriteString(f)
-				continue
-			}
-			if i == sizeCol {
-				fmt.Fprintf(&b, "%*s ", widths[i], f)
-			} else {
-				fmt.Fprintf(&b, "%-*s ", widths[i], f)
+		for i, c := range r {
+			pad := strings.Repeat(" ", widths[i]-c.width)
+			switch {
+			case i == numCols-1:
+				b.WriteString(c.text)
+			case i == sizeCol:
+				b.WriteString(pad)
+				b.WriteString(c.text)
+				b.WriteByte(' ')
+			default:
+				b.WriteString(c.text)
+				b.WriteString(pad)
+				b.WriteByte(' ')
 			}
 		}
 		fmt.Println(b.String())
@@ -275,12 +322,17 @@ func lsCommand(sparse *string) *cobra.Command {
 			case long:
 				sizeCol = 1
 			}
-			row := func(displayName string, info fs.FileInfo) ([]string, error) {
+			var ghRepo string
+			var hasGH bool
+			if blame && terminalSupportsHyperlinks() {
+				ghRepo, hasGH = githubRepo(tg.gitBin, tg.repoPath)
+			}
+			row := func(displayName string, info fs.FileInfo) ([]tableCell, error) {
 				switch {
 				case !long:
-					return []string{displayName}, nil
+					return []tableCell{cell(displayName)}, nil
 				case !blame:
-					return []string{info.Mode().String(), strconv.FormatInt(info.Size(), 10), lsDate(info.ModTime()), displayName}, nil
+					return []tableCell{cell(info.Mode().String()), cell(strconv.FormatInt(info.Size(), 10)), cell(lsDate(info.ModTime())), cell(displayName)}, nil
 				default:
 					es, _ := info.Sys().(*gitfs.ExtendedStat)
 					if es == nil {
@@ -289,7 +341,12 @@ func lsCommand(sparse *string) *cobra.Command {
 					if es.Err != nil {
 						return nil, es.Err
 					}
-					return []string{info.Mode().String(), es.AuthorEmail, strconv.FormatInt(info.Size(), 10), lsDate(es.Date), shortSHA(es.Commit), displayName}, nil
+					short := shortSHA(es.Commit)
+					commitCell := cell(short)
+					if hasGH && reachableFromOrigin(tg.gitBin, tg.repoPath, es.Commit) {
+						commitCell = hyperlink(githubCommitURL(ghRepo, es.Commit), short)
+					}
+					return []tableCell{cell(info.Mode().String()), cell(es.AuthorEmail), cell(strconv.FormatInt(info.Size(), 10)), cell(lsDate(es.Date)), commitCell, cell(displayName)}, nil
 				}
 			}
 
@@ -303,7 +360,7 @@ func lsCommand(sparse *string) *cobra.Command {
 					if err != nil {
 						return err
 					}
-					printTable([][]string{r}, sizeCol)
+					printTable([][]tableCell{r}, sizeCol)
 					printedAny = true
 					continue
 				}
@@ -312,7 +369,7 @@ func lsCommand(sparse *string) *cobra.Command {
 					return err
 				}
 				printHeader(displayPath(tg.prefix, t))
-				rows := make([][]string, 0, len(entries))
+				rows := make([][]tableCell, 0, len(entries))
 				for _, e := range entries {
 					entryInfo, err := e.Info()
 					if err != nil {
@@ -467,10 +524,14 @@ func looksLikeHexPrefix(s string) bool {
 }
 
 // target bundles what cat/ls need once ref has been resolved: the pinned
-// GitFS and the cwd's repo-root-relative prefix.
+// GitFS, the cwd's repo-root-relative prefix, and (for ls --blame's GitHub
+// link rendering, which needs its own git calls alongside the GitFS reads)
+// the git binary and repo path.
 type target struct {
-	fsys   *gitfs.GitFS
-	prefix string
+	fsys     *gitfs.GitFS
+	prefix   string
+	gitBin   string
+	repoPath string
 }
 
 // openFS resolves ref against the repository discovered from the current
@@ -512,7 +573,7 @@ func openFS(ref, sparse string, extraOpts ...gitfs.Option) (*target, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &target{fsys: fsys, prefix: prefix}, nil
+	return &target{fsys: fsys, prefix: prefix, gitBin: gitBin, repoPath: repoPath}, nil
 }
 
 // discoverRepo locates the repository containing the current directory, the
@@ -530,6 +591,37 @@ func discoverRepo(gitBin string) (repoPath string, bare bool, err error) {
 		repoPath, err = runGit(gitBin, ".", "rev-parse", "--show-toplevel")
 	}
 	return repoPath, bare, err
+}
+
+// githubRepo returns "owner/repo" if the origin remote's URL points at
+// github.com (SSH or HTTPS form), and ok=false otherwise — no origin
+// remote, or a non-GitHub host.
+func githubRepo(gitBin, repoPath string) (ownerRepo string, ok bool) {
+	url, err := runGit(gitBin, repoPath, "remote", "get-url", "origin")
+	if err != nil {
+		return "", false
+	}
+	url = strings.TrimSuffix(url, ".git")
+	for _, prefix := range []string{"git@github.com:", "ssh://git@github.com/", "https://github.com/"} {
+		if rest, ok := strings.CutPrefix(url, prefix); ok && rest != "" {
+			return rest, true
+		}
+	}
+	return "", false
+}
+
+// reachableFromOrigin reports whether sha is, or is an ancestor of, the
+// tip of any origin/* remote-tracking branch — i.e. whether it's actually
+// present on the remote as of the last fetch (git has no way to ask the
+// remote directly for an arbitrary commit; only ref tips are queryable).
+func reachableFromOrigin(gitBin, repoPath, sha string) bool {
+	out, err := runGit(gitBin, repoPath, "branch", "-r", "--contains", sha, "--list", "origin/*")
+	return err == nil && out != ""
+}
+
+// githubCommitURL returns the GitHub web URL for sha in ownerRepo.
+func githubCommitURL(ownerRepo, sha string) string {
+	return "https://github.com/" + ownerRepo + "/commit/" + sha
 }
 
 // repoPrefix returns the current directory's path relative to the repo

@@ -220,6 +220,55 @@ test_ls_blame_rejects_invalid_limit() {
   fi
 }
 
+test_ls_blame_renders_github_url_when_forced() {
+  # origin (the local bare clone) already has $SHA fetched into
+  # origin/main from setup(); changing the URL afterward doesn't affect
+  # already-fetched remote-tracking refs, so this tests URL construction
+  # against a real reachability check. GITFS_FORCE_HYPERLINKS is needed
+  # since this harness's output is always piped, never a real TTY.
+  git -C "$REPO" remote set-url origin git@github.com:testuser/testrepo.git
+
+  local out
+  out=$(GITFS_FORCE_HYPERLINKS=1 "$GITFS_BIN" ls --blame "$SHA" README.md)
+  assert_contains "$out" "https://github.com/testuser/testrepo/commit/$SHA"
+}
+
+test_ls_blame_no_hyperlink_without_tty_or_force() {
+  # Same reachable-on-GitHub setup as above, but without forcing: piped
+  # output (this harness never has a real TTY) must never emit a URL or
+  # OSC 8 escape sequence, only the plain short SHA.
+  git -C "$REPO" remote set-url origin git@github.com:testuser/testrepo.git
+
+  local out
+  out=$("$GITFS_BIN" ls --blame "$SHA" README.md)
+  assert_contains "$out" "${SHA:0:7}"
+  if [[ "$out" == *github.com* || "$out" == *$'\x1b]8;;'* ]]; then
+    fail "expected no hyperlink/URL without a TTY or GITFS_FORCE_HYPERLINKS: $out"
+  else
+    pass
+  fi
+}
+
+test_ls_blame_falls_back_to_short_sha_when_unreachable() {
+  git -C "$REPO" remote set-url origin git@github.com:testuser/testrepo.git
+
+  # A new commit never fetched into origin/* isn't reachable from it.
+  echo more >>"$REPO/README.md"
+  git -C "$REPO" add -A
+  git -C "$REPO" commit --quiet -m unpushed
+  local sha2
+  sha2=$(git -C "$REPO" rev-parse HEAD)
+
+  local out
+  out=$("$GITFS_BIN" ls --blame "$sha2" README.md)
+  assert_contains "$out" "${sha2:0:7}"
+  if [[ "$out" == *github.com* ]]; then
+    fail "expected no GitHub URL for a commit not reachable from origin: $out"
+  else
+    pass
+  fi
+}
+
 test_sparse() {
   # Root listing is limited to the ancestors of the sparse paths.
   both "src" ls --sparse src/app "$SHA"
