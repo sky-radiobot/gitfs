@@ -14,7 +14,7 @@ reads, ever.
 - `file.go` — in-memory `fs.File` implementation
 - `cmd/gitfs/` — minimal CLI (`cat`/`ls`, built on [cobra](https://github.com/spf13/cobra)); the executable surface for the integration tests
 - `tests/integration/` — bash integration tests (`testsh.inc` runner, from radiospiel/critic)
-- `simple-go/` — git submodule, [radiospiel/simple-go](https://github.com/radiospiel/simple-go); only `src/assert` is consumed
+- `simple-go/` — git submodule, [radiospiel/simple-go](https://github.com/radiospiel/simple-go); only `src/assert` is consumed. Its own `CLAUDE.md` holds the Go-toolchain (gopls LSP) setup shared with this repo.
 - `agents/` — task strategy guide, log template, and per-task progress logs
 
 ## Commands
@@ -49,38 +49,10 @@ reads, ever.
 
 ## Session Setup: verify Go LSP
 
-At the start of each Claude Code session in this repo, verify Go LSP support is available. The Go language server (`gopls`) is what gives Claude accurate symbol lookups, diagnostics, type information, and refactor safety; without it, navigation and edits across this codebase rely on text-grep and become unreliable.
-
-Claude Code wires LSP servers into the session through its **plugin system** — see <https://code.claude.com/docs/en/plugins-reference#lsp-servers> for the full schema and field reference. There is no native CLI flag and no MCP bridge involved.
-
-The official Anthropic marketplace ships a ready-to-use `gopls-lsp` plugin; it's the recommended path. (Other LSP plugins in the same marketplace include `clangd-lsp`, `csharp-lsp`, `jdtls-lsp`, `kotlin-lsp`, `lua-lsp`, `php-lsp`, `pyright-lsp`, `ruby-lsp`, `rust-analyzer-lsp`, `swift-lsp`, `typescript-lsp`.)
-
-**Verification steps — try the tool before concluding it's unavailable:**
-
-1. First, actually attempt an `LSP` tool call (e.g. `workspaceSymbol` with a real query, or `documentSymbol` on a Go file) via `ToolSearch` (`select:LSP`) and check whether it returns real results. The plugin can be installed and enabled — and the `LSP` tool live and working — even when a static config check (e.g. `~/.claude/plugins/config.json`) looks empty; that file is not authoritative for per-project plugin enablement (see step 2b). Don't declare gopls "not installed" or "not enabled" from a config-file read alone — confirm with a live tool call first.
-2. If the live call fails or the tool isn't offered, fall back to static checks:
-   a. Run `which gopls` (or `gopls version`) to confirm the binary is installed.
-   b. Check the **project's** `.claude/settings.json` (not just `~/.claude/settings.json` or `~/.claude/plugins/config.json`) for an `enabledPlugins` entry referencing `gopls-lsp` — plugins are frequently installed with project scope, and that's where enablement actually lives. Alternatively, run `/plugin` and look in the Installed tab for `gopls-lsp` (and the Errors tab for any load failures).
-
-**If `gopls` is missing, ask the user before installing anything.** With consent:
-
-1. Install the binary: `go install golang.org/x/tools/gopls@latest`. Verify with `gopls version`.
-2. Enable the marketplace plugin interactively: run `/plugin` → Discover tab → install `gopls-lsp`. Slash commands cannot be invoked from a tool call, so the user must run this themselves.
-3. Restart the Claude Code session so the LSP plugin loads, then confirm via `/plugin` Installed tab.
-
-**Exception — Claude Code for the web (cloud sandbox):** when the session is running in the cloud sandbox, install `gopls` automatically without asking. Detect the environment via the `CLAUDE_CODE_REMOTE_ENVIRONMENT_TYPE` env var (the cloud sandbox sets it to `cloud_default`). The sandbox is ephemeral, isolated, and rebuilt per session, so a missing `gopls` is a setup gap to fix silently rather than a user decision. Steps:
-
-1. Run `go install golang.org/x/tools/gopls@latest` (this lands the binary in `$(go env GOPATH)/bin`, typically `/root/go/bin`).
-2. The cloud sandbox's PATH already includes the marketplace plugin's expected bin dir (`~/.claude/plugins/cache/claude-plugins-official/gopls-lsp/<version>/bin`) but that dir may be empty. Symlink the freshly-built binary into it so `which gopls` resolves on PATH:
-   ```bash
-   PLUGIN_BIN="$(ls -d ~/.claude/plugins/cache/claude-plugins-official/gopls-lsp/*/bin 2>/dev/null | head -1)"
-   [ -n "$PLUGIN_BIN" ] && mkdir -p "$PLUGIN_BIN" && ln -sf "$(go env GOPATH)/bin/gopls" "$PLUGIN_BIN/gopls"
-   ```
-3. Verify with `which gopls && gopls version`. The LSP plugin will pick it up on the next session start.
-
-If for any reason the marketplace plugin is unsuitable, a one-file local plugin with the `lspServers.gopls.command = "gopls"` entry shown in the docs is a drop-in equivalent.
-
-Until LSP is confirmed working (or the user explicitly declines), avoid non-trivial cross-file refactors — flag the limitation in your first response and proceed with extra caution on symbol renames, signature changes, and dead-code removal.
+See [simple-go/CLAUDE.md](simple-go/CLAUDE.md#session-setup-verify-go-lsp)
+for the full verification/installation procedure (gopls LSP plugin). It's
+kept there as the single source of truth so it doesn't drift between this
+repo and other consumers of the `simple-go` submodule.
 
 ## Task Strategy Selection
 
