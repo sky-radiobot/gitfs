@@ -260,6 +260,26 @@ test_completes_remote_tracking_ref() {
   fi
 }
 
+test_completes_sha_prefix() {
+  local out
+  out=$("$GITFS_BIN" __complete ls "${SHA:0:4}" 2>/dev/null)
+  if has_line "$out" "$SHA"; then
+    pass
+  else
+    fail "expected full SHA in completions for prefix '${SHA:0:4}': $out"
+  fi
+}
+
+test_sha_prefix_completion_requires_four_digits() {
+  local out
+  out=$("$GITFS_BIN" __complete ls "${SHA:0:3}" 2>/dev/null)
+  if has_line "$out" "$SHA"; then
+    fail "expected no SHA completion below 4 hex digits: $out"
+  else
+    pass
+  fi
+}
+
 test_path_arg_falls_back_to_default_completion() {
   local out
   out=$("$GITFS_BIN" __complete cat "$SHA" "" 2>/dev/null)
