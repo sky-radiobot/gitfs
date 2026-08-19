@@ -12,7 +12,7 @@ reads, ever.
 - `backend_gogit.go` — default backend, pure Go via [go-git](https://github.com/go-git/go-git)
 - `backend_exec.go` — shell-out backend, used only when `WithGitBinary` is set
 - `file.go` — in-memory `fs.File` implementation
-- `cmd/gitfs/` — minimal CLI (`cat`/`ls`/`stat`/`glob`); the executable surface for the integration tests
+- `cmd/gitfs/` — minimal CLI (`cat`/`ls`, built on [cobra](https://github.com/spf13/cobra)); the executable surface for the integration tests
 - `tests/integration/` — bash integration tests (`testsh.inc` runner, from radiospiel/critic)
 - `simple-go/` — git submodule, [radiospiel/simple-go](https://github.com/radiospiel/simple-go); only `src/assert` is consumed
 - `agents/` — task strategy guide, log template, and per-task progress logs

@@ -5,7 +5,6 @@ package main
 
 import (
 	"bytes"
-	"flag"
 	"fmt"
 	"io/fs"
 	"os"
@@ -13,12 +12,14 @@ import (
 	"path"
 	"strings"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+
 	"gitfs"
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: gitfs [-git-binary PATH] [-sparse p1,p2] REF OP [ARGS]")
-	fmt.Fprintln(os.Stderr, "ops:   cat PATH [PATH...] | ls [-l] [PATH...]")
+	fmt.Fprintln(os.Stderr, "usage: gitfs [--git-binary PATH] [--sparse p1,p2] REF cat|ls [ARGS]")
 	fmt.Fprintln(os.Stderr, "REF is a full commit SHA or anything the git CLI can resolve to one")
 	fmt.Fprintln(os.Stderr, "(branch, tag, short SHA, HEAD, ...). The repository is discovered")
 	fmt.Fprintln(os.Stderr, "from the current directory, the same way git itself does.")
@@ -31,107 +32,132 @@ func fatal(err error) {
 }
 
 func main() {
-	gitBinaryFlag := flag.String("git-binary", "", "shell out to the git binary at PATH instead of using go-git")
-	sparse := flag.String("sparse", "", "comma-separated repo-relative paths to restrict the filesystem to")
-	flag.Usage = usage
-	flag.Parse()
+	// Global flags must precede REF; SetInterspersed(false) stops parsing at
+	// the first positional argument so the remainder (REF, op, and the op's
+	// own flags such as ls's -l) is left untouched for the cobra dispatch
+	// below, rather than being rejected as unknown flags of this flag set.
+	globalFlags := pflag.NewFlagSet("gitfs", pflag.ContinueOnError)
+	globalFlags.SetInterspersed(false)
+	gitBinaryFlag := globalFlags.String("git-binary", "", "shell out to the git binary at PATH instead of using go-git")
+	sparse := globalFlags.String("sparse", "", "comma-separated repo-relative paths to restrict the filesystem to")
+	globalFlags.Usage = usage
+	if err := globalFlags.Parse(os.Args[1:]); err != nil {
+		usage()
+	}
 
-	args := flag.Args()
+	args := globalFlags.Args()
 	if len(args) < 2 {
 		usage()
 	}
-	ref, op, opArgs := args[0], args[1], args[2:]
+	ref, opArgs := args[0], args[1:]
 
-	gitBin := *gitBinaryFlag
+	if err := run(*gitBinaryFlag, *sparse, ref, opArgs); err != nil {
+		fatal(err)
+	}
+}
+
+// run resolves ref against the repository discovered from the current
+// directory, opens the pinned GitFS, and dispatches op (with its own args)
+// to the cat/ls subcommands.
+func run(gitBinaryFlag, sparse, ref string, opArgs []string) error {
+	gitBin := gitBinaryFlag
 	if gitBin == "" {
 		gitBin = "git"
 	}
 
 	repoPath, bare, err := discoverRepo(gitBin)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	sha, err := resolveSHA(gitBin, repoPath, ref)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	prefix, err := repoPrefix(gitBin, bare)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	var opts []gitfs.Option
-	if *gitBinaryFlag != "" {
-		opts = append(opts, gitfs.WithGitBinary(*gitBinaryFlag))
+	if gitBinaryFlag != "" {
+		opts = append(opts, gitfs.WithGitBinary(gitBinaryFlag))
 	}
-	if *sparse != "" {
-		opts = append(opts, gitfs.WithSparse(strings.Split(*sparse, ",")...))
+	if sparse != "" {
+		opts = append(opts, gitfs.WithSparse(strings.Split(sparse, ",")...))
 	}
 
 	fsys, err := gitfs.Open(repoPath, sha, opts...)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
-	switch op {
-	case "cat":
-		runCat(fsys, prefix, opArgs)
-	case "ls":
-		runLs(fsys, prefix, opArgs)
-	default:
-		usage()
+	sub := &cobra.Command{
+		Use:           "gitfs",
+		SilenceUsage:  true,
+		SilenceErrors: true,
 	}
+	sub.AddCommand(catCommand(fsys, prefix), lsCommand(fsys, prefix))
+	sub.SetArgs(opArgs)
+	return sub.Execute()
 }
 
-func runCat(fsys *gitfs.GitFS, prefix string, paths []string) {
-	if len(paths) == 0 {
-		usage()
-	}
-	for _, p := range paths {
-		data, err := fsys.ReadFile(path.Join(prefix, p))
-		if err != nil {
-			fatal(err)
-		}
-		if _, err := os.Stdout.Write(data); err != nil {
-			fatal(err)
-		}
-	}
-}
-
-func runLs(fsys *gitfs.GitFS, prefix string, args []string) {
-	lsFlags := flag.NewFlagSet("ls", flag.ExitOnError)
-	long := lsFlags.Bool("l", false, "long format: mode, size, name")
-	lsFlags.Usage = usage
-	lsFlags.Parse(args)
-
-	paths := lsFlags.Args()
-	if len(paths) == 0 {
-		paths = []string{"."}
-	}
-
-	for i, p := range paths {
-		entries, err := fsys.ReadDir(path.Join(prefix, p))
-		if err != nil {
-			fatal(err)
-		}
-		if len(paths) > 1 {
-			if i > 0 {
-				fmt.Println()
-			}
-			fmt.Printf("%s:\n", p)
-		}
-		for _, e := range entries {
-			if *long {
-				info, err := e.Info()
+func catCommand(fsys *gitfs.GitFS, prefix string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "cat PATH [PATH...]",
+		Short: "print the content of one or more files",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, paths []string) error {
+			for _, p := range paths {
+				data, err := fsys.ReadFile(path.Join(prefix, p))
 				if err != nil {
-					fatal(err)
+					return err
 				}
-				printInfo(info)
-			} else {
-				fmt.Println(e.Name())
+				if _, err := os.Stdout.Write(data); err != nil {
+					return err
+				}
 			}
-		}
+			return nil
+		},
 	}
+}
+
+func lsCommand(fsys *gitfs.GitFS, prefix string) *cobra.Command {
+	var long bool
+	cmd := &cobra.Command{
+		Use:   "ls [PATH...]",
+		Short: "list directory entries",
+		RunE: func(cmd *cobra.Command, paths []string) error {
+			if len(paths) == 0 {
+				paths = []string{"."}
+			}
+			for i, p := range paths {
+				entries, err := fsys.ReadDir(path.Join(prefix, p))
+				if err != nil {
+					return err
+				}
+				if len(paths) > 1 {
+					if i > 0 {
+						fmt.Println()
+					}
+					fmt.Printf("%s:\n", p)
+				}
+				for _, e := range entries {
+					if long {
+						info, err := e.Info()
+						if err != nil {
+							return err
+						}
+						printInfo(info)
+					} else {
+						fmt.Println(e.Name())
+					}
+				}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVarP(&long, "long", "l", false, "long format: mode, size, name")
+	return cmd
 }
 
 // printInfo prints "<mode>\t<size>\t<name>".

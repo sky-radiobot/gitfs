@@ -77,9 +77,14 @@ $ gitfs main cat README.md
 
 Flags (must precede `REF`):
 
-- `-git-binary PATH` — use the shell-out backend instead of go-git.
-- `-sparse p1,p2` — restrict the filesystem to the given repo-relative
+- `--git-binary PATH` — use the shell-out backend instead of go-git.
+- `--sparse p1,p2` — restrict the filesystem to the given repo-relative
   subtrees.
+
+Built on [cobra](https://github.com/spf13/cobra): `--git-binary`/`--sparse`
+are parsed ahead of `REF` by a plain `pflag.FlagSet`, and the remaining
+`cat`/`ls [ARGS]` are dispatched as cobra subcommands (so e.g. `ls --help`
+works).
 
 ## Development
 
