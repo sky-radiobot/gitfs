@@ -323,9 +323,12 @@ func lsCommand(sparse *string) *cobra.Command {
 				sizeCol = 1
 			}
 			var ghRepo string
-			var hasGH bool
-			if blame && terminalSupportsHyperlinks() {
-				ghRepo, hasGH = githubRepo(tg.gitBin, tg.repoPath)
+			var hasGH, canHyperlink bool
+			if blame {
+				canHyperlink = terminalSupportsHyperlinks()
+				if canHyperlink {
+					ghRepo, hasGH = githubRepo(tg.gitBin, tg.repoPath)
+				}
 			}
 			row := func(displayName string, info fs.FileInfo) ([]tableCell, error) {
 				switch {
@@ -346,7 +349,13 @@ func lsCommand(sparse *string) *cobra.Command {
 					if hasGH && reachableFromOrigin(tg.gitBin, tg.repoPath, es.Commit) {
 						commitCell = hyperlink(githubCommitURL(ghRepo, es.Commit), short)
 					}
-					return []tableCell{cell(info.Mode().String()), cell(es.AuthorEmail), cell(strconv.FormatInt(info.Size(), 10)), cell(lsDate(es.Date)), commitCell, cell(displayName)}, nil
+					authorCell := cell(es.AuthorEmail)
+					if canHyperlink {
+						if username, ok := githubUsernameFromNoreplyEmail(es.AuthorEmail); ok {
+							authorCell = hyperlink(githubProfileURL(username), username)
+						}
+					}
+					return []tableCell{cell(info.Mode().String()), authorCell, cell(strconv.FormatInt(info.Size(), 10)), cell(lsDate(es.Date)), commitCell, cell(displayName)}, nil
 				}
 			}
 
@@ -622,6 +631,32 @@ func reachableFromOrigin(gitBin, repoPath, sha string) bool {
 // githubCommitURL returns the GitHub web URL for sha in ownerRepo.
 func githubCommitURL(ownerRepo, sha string) string {
 	return "https://github.com/" + ownerRepo + "/commit/" + sha
+}
+
+// githubUsernameFromNoreplyEmail extracts the username from a GitHub
+// "keep my email private" noreply address, recognizing both the current
+// "<id>+<username>@users.noreply.github.com" form and the older, still
+// valid "<username>@users.noreply.github.com" form. This is a GitHub
+// account identity independent of any particular repo, so it doesn't
+// depend on origin being GitHub or the commit being reachable from it —
+// unlike the commit-URL hyperlink.
+func githubUsernameFromNoreplyEmail(email string) (username string, ok bool) {
+	local, ok := strings.CutSuffix(email, "@users.noreply.github.com")
+	if !ok || local == "" {
+		return "", false
+	}
+	if _, rest, found := strings.Cut(local, "+"); found {
+		local = rest
+	}
+	if local == "" {
+		return "", false
+	}
+	return local, true
+}
+
+// githubProfileURL returns the GitHub web URL for a user's profile.
+func githubProfileURL(username string) string {
+	return "https://github.com/" + username
 }
 
 // repoPrefix returns the current directory's path relative to the repo

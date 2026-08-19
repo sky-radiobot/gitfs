@@ -14,6 +14,7 @@ reads, ever.
 - `file.go` — in-memory `fs.File` implementation
 - `cmd/gitfs/` — minimal CLI (`cat`/`ls`, built on [cobra](https://github.com/spf13/cobra)); the executable surface for the integration tests
 - `tests/integration/` — bash integration tests (`testsh.inc` runner, from radiospiel/critic)
+- `benchmarks/` — Go benchmarks needing a real, sizeable repo (`~/projects/critic`) to be meaningful; skip-gated when it's absent. `RESULTS.md` records the latest numbers.
 - `simple-go/` — git submodule, [radiospiel/simple-go](https://github.com/radiospiel/simple-go); only `src/assert` is consumed. Its own `CLAUDE.md` holds the Go-toolchain (gopls LSP) setup shared with this repo.
 - `agents/` — task strategy guide, log template, and per-task progress logs
 

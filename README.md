@@ -53,6 +53,15 @@ Functional options tune how a `GitFS` reads:
   itself; negative is unbounded, which can be slow on a large history); the
   result is never a commit newer than the pinned one, though it may be
   imprecise under a tight bound.
+- `gitfs.WithBlameFallback(path)` — for the default go-git backend's
+  `WithExtendedStats` lookups only: every search first probes with the
+  cheap pure-Go walk (capped at 150 ancestor commits), and only shells out
+  to the git binary at `path` if that probe comes up empty — so a shallow
+  answer stays on the fast path even under an unbounded/large `maxCommits`,
+  while a search that's actually deep escalates instead of walking
+  hundreds of commits in pure Go. Benchmarked against a real 800+ commit
+  repo in [`benchmarks/`](benchmarks/RESULTS.md). Has no effect when
+  `WithGitBinary` is also set.
 
 ## CLI
 
@@ -108,11 +117,16 @@ When `origin` is a GitHub remote and the blamed commit is reachable from
 one of its `origin/*` branches (checked locally, so only as fresh as your
 last `fetch`), the commit column is rendered as a clickable OSC 8 terminal
 hyperlink (`https://github.com/<owner>/<repo>/commit/<sha>`) with the
-short SHA as its visible text; otherwise it's a plain short SHA. Links
-only render when stdout looks like a terminal that supports them (a real
-TTY, `TERM` not `dumb`/unset); set `GITFS_FORCE_HYPERLINKS=1` to force
-them regardless — e.g. when piping through `less -R`, which preserves
-escape sequences despite output no longer being a TTY.
+short SHA as its visible text; otherwise it's a plain short SHA. Likewise,
+an author email in GitHub's `<id>+<username>@users.noreply.github.com` (or
+legacy `<username>@users.noreply.github.com`) form is rendered as a link
+to `https://github.com/<username>`, showing just the username — this
+doesn't depend on `origin` being GitHub, since it's a GitHub account
+identity, not a repo one. Links only render when stdout looks like a
+terminal that supports them (a real TTY, `TERM` not `dumb`/unset); set
+`GITFS_FORCE_HYPERLINKS=1` to force them regardless — e.g. when piping
+through `less -R`, which preserves escape sequences despite output no
+longer being a TTY.
 
 - `--sparse p1,p2` — restrict the filesystem to the given repo-relative
   subtrees.

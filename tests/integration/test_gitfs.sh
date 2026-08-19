@@ -233,6 +233,44 @@ test_ls_blame_renders_github_url_when_forced() {
   assert_contains "$out" "https://github.com/testuser/testrepo/commit/$SHA"
 }
 
+test_ls_blame_renders_github_author_profile_link() {
+  echo more >>"$REPO/README.md"
+  git -C "$REPO" add -A
+  GIT_AUTHOR_EMAIL="12345+octocat@users.noreply.github.com" \
+    GIT_COMMITTER_EMAIL="12345+octocat@users.noreply.github.com" \
+    git -C "$REPO" commit --quiet -m "noreply author"
+  local sha2
+  sha2=$(git -C "$REPO" rev-parse HEAD)
+
+  local out
+  out=$(GITFS_FORCE_HYPERLINKS=1 "$GITFS_BIN" ls --blame "$sha2" README.md)
+  assert_contains "$out" "https://github.com/octocat"
+  if [[ "$out" == *"12345+octocat@users.noreply.github.com"* ]]; then
+    fail "expected the raw noreply email hidden behind the hyperlink, not shown as text: $out"
+  else
+    pass
+  fi
+}
+
+test_ls_blame_no_author_link_without_tty_or_force() {
+  echo more >>"$REPO/README.md"
+  git -C "$REPO" add -A
+  GIT_AUTHOR_EMAIL="12345+octocat@users.noreply.github.com" \
+    GIT_COMMITTER_EMAIL="12345+octocat@users.noreply.github.com" \
+    git -C "$REPO" commit --quiet -m "noreply author"
+  local sha2
+  sha2=$(git -C "$REPO" rev-parse HEAD)
+
+  local out
+  out=$("$GITFS_BIN" ls --blame "$sha2" README.md)
+  assert_contains "$out" "12345+octocat@users.noreply.github.com"
+  if [[ "$out" == *github.com/octocat* ]]; then
+    fail "expected no author hyperlink without a TTY or GITFS_FORCE_HYPERLINKS: $out"
+  else
+    pass
+  fi
+}
+
 test_ls_blame_no_hyperlink_without_tty_or_force() {
   # Same reachable-on-GitHub setup as above, but without forcing: piped
   # output (this harness never has a real TTY) must never emit a URL or
