@@ -148,10 +148,31 @@ size — 4 is a hard floor of git's own lookup (`rev-parse --disambiguate`
 silently returns nothing below that), not just a tuning choice.
 `PATH` arguments fall back to the shell's normal file completion.
 
+### `git ls`
+
+`cmd/git-ls` builds a `git-ls` binary that repackages `ls` as a `git`
+subcommand pinned to the current checkout — with the binary on your
+`PATH` (e.g. via `make install`), `git ls` works like any other git
+command:
+
+```sh
+git ls [PATH...]           # ≡  gitfs ls HEAD [PATH...]
+git ls -l|--long [PATH...] # ≡  gitfs ls HEAD --blame=N [PATH...]
+```
+
+Plain `git ls` prints names only; `-l` switches to the blame listing. Its
+search depth `N` defaults to 1000 ancestor commits and is configurable via
+`git config gitls.blameLimit` (e.g. `git config gitls.blameLimit 500`); an
+explicit `--blame[=LIMIT]` argument overrides it. Everything else — paths,
+globs, `--sparse` — behaves exactly as in `gitfs ls HEAD`. The binary
+contains a deliberate copy of the gitfs `ls` subcommand's implementation
+rather than sharing a package; keep the two in sync.
+
 ## Development
 
 - `make build` — build all packages
-- `make install` — install the `gitfs` CLI to `GOBIN`/`GOPATH/bin`
+- `make install` — install the `gitfs` and `git-ls` CLIs to
+  `GOBIN`/`GOPATH/bin`
 - `make unit-tests` — Go unit tests
 - `make integration-tests` — bash integration tests against the compiled
   CLI, cross-checked against the real `git` CLI, on both backends

@@ -13,6 +13,7 @@ reads, ever.
 - `backend_exec.go` — shell-out backend, used only when `WithGitBinary` is set
 - `file.go` — in-memory `fs.File` implementation
 - `cmd/gitfs/` — minimal CLI (`cat`/`ls`, built on [cobra](https://github.com/spf13/cobra)); the executable surface for the integration tests
+- `cmd/git-ls/` — `git ls` subcommand binary: a deliberate copy of the gitfs `ls` subcommand pinned to HEAD (no shared package, by decision)
 - `tests/integration/` — bash integration tests (`testsh.inc` runner, from radiospiel/critic)
 - `benchmarks/` — Go benchmarks needing a real, sizeable repo (`~/projects/critic`) to be meaningful; skip-gated when it's absent. `RESULTS.md` records the latest numbers.
 - `simple-go/` — git submodule, [radiospiel/simple-go](https://github.com/radiospiel/simple-go); only `src/assert` is consumed. Its own `CLAUDE.md` holds the Go-toolchain (gopls LSP) setup shared with this repo.
@@ -21,7 +22,7 @@ reads, ever.
 ## Commands
 
 - `make build` — build all packages
-- `make install` — install the `gitfs` CLI to `GOBIN`/`GOPATH/bin`
+- `make install` — install the `gitfs` and `git-ls` CLIs to `GOBIN`/`GOPATH/bin`
 - `make unit-tests` — Go unit tests
 - `make integration-tests` — bash integration tests (builds `bin/gitfs` first)
 - `make test` — unit + integration
@@ -29,6 +30,10 @@ reads, ever.
 - `make sync-submodules` — init/update submodules, push back local in-submodule changes
 - `scripts/develop ARGS...` — rebuild and exec the CLI against the caller's
   cwd (not gitfs's own repo), for quick manual testing without `make build`
+- `cmd/git-ls` — `git ls` subcommand binary: a deliberate copy of the gitfs
+  `ls` subcommand pinned to HEAD; `-l` adds `--blame` with search depth from
+  `git config gitls.blameLimit` (default 1000). Keep it in sync with
+  `cmd/gitfs/main.go`'s ls.
 
 ## Design conventions
 

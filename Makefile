@@ -9,8 +9,8 @@ all: build
 build: sync-submodules ## Build all packages
 	go build ./...
 
-install: sync-submodules ## Install the gitfs CLI to GOBIN/GOPATH/bin
-	go install ./cmd/gitfs
+install: sync-submodules ## Install the gitfs and git-ls CLIs to GOBIN/GOPATH/bin
+	go install ./cmd/gitfs ./cmd/git-ls
 
 sync-submodules: ## Init/update git submodules and push back any local changes made to them
 	./scripts/sync-submodules
