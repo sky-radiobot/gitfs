@@ -1,6 +1,6 @@
-module gitfs
+module github.com/sky-radiobot/gitfs
 
-go 1.26.4
+go 1.25.0
 
 require (
 	github.com/go-git/go-git/v5 v5.19.2

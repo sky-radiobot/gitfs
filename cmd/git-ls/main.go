@@ -26,7 +26,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"gitfs"
+	"github.com/sky-radiobot/gitfs"
 )
 
 func fatal(cmd *cobra.Command, err error) {

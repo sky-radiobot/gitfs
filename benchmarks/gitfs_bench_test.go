@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"gitfs"
+	"github.com/sky-radiobot/gitfs"
 )
 
 // benchRepo returns a real, sizeable repo to benchmark against
