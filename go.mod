@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/go-git/go-git/v5 v5.19.2
-	github.com/radiospiel/simple-go v0.0.0-00010101000000-000000000000
+	github.com/radiospiel/simple-go v0.0.0-20260819202140-839055e1fbe1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
 )
